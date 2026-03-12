@@ -1,0 +1,5 @@
+api_keys.py
+cache/
+logs/
+*.pyc
+__pycache__/
