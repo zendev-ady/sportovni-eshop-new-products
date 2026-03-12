@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.join(_HERE, "src"))         # → xml_parser, product
 import xml_parser
 import product_grouper
 import translator
+import category_mapper
 from price_calculator import calculate_price, get_eur_czk_rate
 from config.config import XML_SOURCE_URL, LOG_DIR
 
@@ -172,18 +173,31 @@ def main() -> None:
     from woo_client import WooClient  # deferred — requires woocommerce package + WOO_URL
     from image_uploader import resolve_images
 
+    logger.info("Translating product names for image filenames...")
+    translations = {}
+    for g in groups:
+        logger.info("  Translating [%s] SKU=%s  %r", g.kind, g.parent_sku, g.name)
+        translations[g.parent_sku] = translator.translate(g)
+
     logger.info("Resolving images to GCS...")
-    resolve_images(groups)
+    resolve_images(groups, translations)
 
     current_skus = {g.parent_sku for g in groups}
 
     with WooClient() as woo:
         for group in groups:
-            translated = translator.translate(group)
-            # Phase 2: Czech text wired in; Phase 3 will replace category stubs
-            woo.upsert_group(group, translated, category_ids=[], category_slug="default")
+            translated = translations[group.parent_sku]
+            logger.info(
+                "  Upserting [%s] SKU=%s  %r → %r",
+                group.kind, group.parent_sku, group.name, translated.name_cs,
+            )
+            # Phase 3: resolve WooCommerce category IDs and margin slug
+            cat_ids, cat_slug = category_mapper.resolve(group, translated)
+            woo.upsert_group(group, translated, category_ids=cat_ids, category_slug=cat_slug)
         woo.flush()
-        drafted = woo.draft_disappeared(current_skus)
+        drafted = woo.draft_disappeared(current_skus) if not args.limit else 0
+        if args.limit:
+            logger.info("Skipping draft_disappeared — --limit is active")
 
     logger.info(
         "Sync complete — %d groups queued for upsert, %d products drafted",
