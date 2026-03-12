@@ -120,9 +120,10 @@ def _dry_run_summary(groups: list, limit: int | None) -> None:
             f"  {v.wholesale_netto:>7.2f} EUR  ->  {czk:>6} CZK"
         )
     print()
-    print("\n  Translation preview — first 3 groups (Czech name vs original):")
+    print("\n  Translation + category preview — first 3 groups:")
     for g in groups[:3]:
         t = translator.translate(g)
+        cat_ids, cat_slug = category_mapper.resolve(g, t)
         print(f"    EN: {g.name[:65]!r}")
         print(f"    CS: {t.name_cs[:65]!r}")
         if t.attrs_cs:
@@ -130,6 +131,7 @@ def _dry_run_summary(groups: list, limit: int | None) -> None:
                 f"{k}={v[0]!r}" for k, v in list(t.attrs_cs.items())[:4]
             )
             print(f"    attrs_cs: {attrs_preview}")
+        print(f"    category_ids: {cat_ids}  slug: {cat_slug!r}")
         print()
 
 
@@ -185,11 +187,16 @@ def main() -> None:
     current_skus = {g.parent_sku for g in groups}
 
     with WooClient() as woo:
-        for group in groups:
+        for idx, group in enumerate(groups):
             translated = translations[group.parent_sku]
             logger.info(
-                "  Upserting [%s] SKU=%s  %r → %r",
-                group.kind, group.parent_sku, group.name, translated.name_cs,
+                "── %d/%d  [%s]  SKU=%s",
+                idx + 1, len(groups), group.kind, group.parent_sku,
+            )
+            logger.info(
+                "   %r  →  %r",
+                group.name[:65],
+                (translated.name_cs or "–")[:65],
             )
             # Phase 3: resolve WooCommerce category IDs and margin slug
             cat_ids, cat_slug = category_mapper.resolve(group, translated)
