@@ -1,0 +1,305 @@
+"""
+translator.py — Translates a ProductGroup from English to Czech.
+
+Input:  ProductGroup (from product_grouper.py)
+Output: TranslatedGroup dataclass with Czech name, descriptions, and attrs.
+
+Translation strategy:
+  - name, short_description, long_description: gpt-4o-mini via OpenAI API
+  - attribute values: static dicts only (attr_maps.py) — never AI
+  - SQLite cache keyed by SHA-256 of input text — mandatory in production
+  - config.SKIP_TRANSLATION=True bypasses AI calls entirely (attrs still translated)
+"""
+
+import hashlib
+import logging
+import sqlite3
+import sys
+import os
+from dataclasses import dataclass
+from typing import Dict, List, Optional
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "config"))
+import config
+import attr_maps
+from api_keys import OPENAI_API_KEY
+from product_grouper import ProductGroup
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Output type
+# ---------------------------------------------------------------------------
+
+@dataclass
+class TranslatedGroup:
+    """
+    Czech-language content for a ProductGroup, ready for the WooCommerce builder.
+
+    Attributes:
+        name_cs:               Czech product name (50–70 chars target)
+        short_description_cs:  Czech short description, HTML allowed
+        long_description_cs:   Czech long description, HTML
+        attrs_cs:              Attribute dict with Czech param names as keys and
+                               Czech values as list items. Keys from ATTRIBUTE_NAME_MAP,
+                               empty-string-mapped attrs excluded.
+    """
+    name_cs: str
+    short_description_cs: str
+    long_description_cs: str
+    attrs_cs: Dict[str, List[str]]
+
+
+# ---------------------------------------------------------------------------
+# SQLite cache
+# ---------------------------------------------------------------------------
+
+def _init_db(path: str) -> sqlite3.Connection:
+    """Open (or create) the translation cache DB and return a connection."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS translations "
+        "(hash TEXT, type TEXT, result TEXT, PRIMARY KEY (hash, type))"
+    )
+    conn.commit()
+    return conn
+
+
+def _cache_get(conn: sqlite3.Connection, text_hash: str, trans_type: str) -> Optional[str]:
+    row = conn.execute(
+        "SELECT result FROM translations WHERE hash = ? AND type = ?",
+        (text_hash, trans_type),
+    ).fetchone()
+    return row[0] if row else None
+
+
+def _cache_set(conn: sqlite3.Connection, text_hash: str, trans_type: str, result: str) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO translations (hash, type, result) VALUES (?, ?, ?)",
+        (text_hash, trans_type, result),
+    )
+    conn.commit()
+
+
+def _sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# OpenAI call
+# ---------------------------------------------------------------------------
+
+def _build_messages(text: str, trans_type: str, context: dict) -> list:
+    """Build the messages list for a single OpenAI call."""
+    producer = context.get("producer", "")
+    category = context.get("category", "")
+    sport     = context.get("attrs_cs", {}).get("sport", [""])[0]
+    gender    = context.get("attrs_cs", {}).get("pohlavi", [""])[0]
+    colour    = context.get("attrs_cs", {}).get("barva", [""])[0]
+
+    if trans_type == "name":
+        system = (
+            "Jsi SEO copywriter pro český sportovní e-shop. "
+            "Píšeš názvy produktů v češtině. Nikdy nepřekládáš názvy značek ani modelové kódy."
+        )
+        user = (
+            f"Vytvoř český název produktu (50–70 znaků) podle formátu: "
+            f"{{pohlaví}} {{typ}} {{značka}} {{model}} {{detail}} {{barva}}.\n"
+            f"Originál: {text}\n"
+            f"Značka: {producer} | Kategorie: {category} | Sport: {sport} | Pohlaví: {gender} | Barva: {colour}\n"
+            f"Vrať pouze výsledný název, bez uvozovek."
+        )
+        return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+    if trans_type == "short_description":
+        system = (
+            "Jsi copywriter pro český sportovní e-shop. "
+            "Píšeš krátké HTML popisy produktů (300–500 znaků). "
+            "Používej <strong> pro 2–3 klíčová slova."
+        )
+        user = (
+            f"Napiš krátký popis produktu v češtině.\n"
+            f"Originální popis: {text}\n"
+            f"Kontext — Název: {context.get('name_cs', '')} | Značka: {producer} | "
+            f"Sport: {sport} | Pohlaví: {gender} | Barva: {colour}\n"
+            f"Vrať pouze HTML text, bez obalujících tagů."
+        )
+        return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+    if trans_type == "long_description":
+        system = (
+            "Jsi copywriter pro český sportovní e-shop. "
+            "Píšeš detailní HTML popisy produktů (1000–1500 znaků). "
+            "Používej <p>, <strong>, <ul>, <li>. Nepřidávej sekce s výzvou k akci explicitně."
+        )
+        user = (
+            f"Napiš detailní popis produktu v češtině.\n"
+            f"Originální popis: {text}\n"
+            f"Kontext — Název: {context.get('name_cs', '')} | Krátký popis: {context.get('short_cs', '')} | "
+            f"Značka: {producer} | Sport: {sport} | Pohlaví: {gender}\n"
+            f"Doplňuj krátký popis, neopakuj ho. Vrať pouze HTML text."
+        )
+        return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+    raise ValueError(f"Unknown trans_type: {trans_type!r}")
+
+
+def _call_ai(text: str, trans_type: str, context: dict) -> str:
+    """Call OpenAI API. Raises on failure — caller handles logging."""
+    from openai import OpenAI
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    response = client.chat.completions.create(
+        model=config.TRANSLATION_MODEL,
+        messages=_build_messages(text, trans_type, context),
+        temperature=0.7,
+        max_tokens={"name": 100, "short_description": 600, "long_description": 1400}[trans_type],
+    )
+    return response.choices[0].message.content.strip()
+
+
+# ---------------------------------------------------------------------------
+# Translate one text field
+# ---------------------------------------------------------------------------
+
+def _translate_text(
+    conn: sqlite3.Connection,
+    text: str,
+    trans_type: str,
+    context: dict,
+) -> str:
+    """
+    Return Czech translation of *text*.
+
+    Cache lookup → AI call → cache store.
+    If SKIP_TRANSLATION is True, returns *text* unchanged (no DB access).
+
+    Args:
+        conn:       Open SQLite connection to the translation cache.
+        text:       Raw English text to translate.
+        trans_type: "name" | "short_description" | "long_description"
+        context:    Dict passed to prompt builder (producer, category, attrs_cs, etc.)
+
+    Returns:
+        Translated Czech string, or original text if SKIP_TRANSLATION is set.
+
+    Raises:
+        Does not raise — logs errors and returns original text as fallback.
+    """
+    if not text:
+        return ""
+
+    if config.SKIP_TRANSLATION:
+        return text
+
+    h = _sha256(text)
+    cached = _cache_get(conn, h, trans_type)
+    if cached is not None:
+        logger.debug("Cache hit: %s %s", trans_type, h[:8])
+        return cached
+
+    try:
+        result = _call_ai(text, trans_type, context)
+    except Exception as exc:
+        logger.error("OpenAI error [%s]: %s — returning original text", trans_type, exc)
+        return text
+
+    _cache_set(conn, h, trans_type, result)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Attribute translation (static dicts, never AI)
+# ---------------------------------------------------------------------------
+
+def _map_attrs(attrs: Dict[str, List[str]]) -> Dict[str, List[str]]:
+    """
+    Translate B2B attribute dict to Czech WooCommerce param dict.
+
+    Key rename: via ATTRIBUTE_NAME_MAP (e.g. "Colour" → "barva").
+    Value translate: via per-attr static dict. Unknown values pass through with WARNING.
+    Attrs mapping to empty string in ATTRIBUTE_NAME_MAP are excluded.
+
+    Args:
+        attrs: Raw group.attrs — {English attr name: [English values]}
+
+    Returns:
+        {Czech param name: [Czech values]} — only attrs with non-empty mapped names.
+    """
+    result: Dict[str, List[str]] = {}
+    for en_key, values in attrs.items():
+        cs_key = attr_maps.ATTRIBUTE_NAME_MAP.get(en_key)
+        if cs_key is None:
+            logger.warning("Unknown attr name %r — dropped from attrs_cs", en_key)
+            continue
+        if cs_key == "":
+            continue  # routing-only attr, not for WooCommerce
+
+        val_map = attr_maps.get_value_map(en_key)
+        translated: List[str] = []
+        for v in values:
+            cs_v = val_map.get(v)
+            if cs_v is None:
+                if val_map:  # map exists but value not found
+                    logger.warning("Unknown value %r for attr %r — using as-is", v, en_key)
+                cs_v = v
+            translated.append(cs_v)
+
+        # Merge into existing key (e.g. multiple "kolekce" attrs)
+        if cs_key in result:
+            result[cs_key].extend(translated)
+        else:
+            result[cs_key] = translated
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def translate(group: ProductGroup) -> TranslatedGroup:
+    """
+    Translate a ProductGroup into Czech content for WooCommerce.
+
+    Attribute values are translated via static dicts (always, even in dev mode).
+    Text fields (name, short/long description) use gpt-4o-mini with SQLite caching.
+    Set config.SKIP_TRANSLATION=True to skip AI calls and return English text as-is.
+
+    Args:
+        group: A ProductGroup from product_grouper.group()
+
+    Returns:
+        TranslatedGroup with Czech fields populated.
+    """
+    attrs_cs = _map_attrs(group.attrs)
+
+    conn = _init_db(config.TRANSLATION_DB)
+    try:
+        context_base = {
+            "producer":  group.producer,
+            "category":  group.category,
+            "attrs_cs":  attrs_cs,
+        }
+
+        name_cs = _translate_text(conn, group.name, "name", context_base)
+
+        short_cs = _translate_text(
+            conn, group.description, "short_description",
+            {**context_base, "name_cs": name_cs},
+        )
+
+        long_cs = _translate_text(
+            conn, group.description, "long_description",
+            {**context_base, "name_cs": name_cs, "short_cs": short_cs},
+        )
+    finally:
+        conn.close()
+
+    return TranslatedGroup(
+        name_cs=name_cs,
+        short_description_cs=short_cs,
+        long_description_cs=long_cs,
+        attrs_cs=attrs_cs,
+    )
