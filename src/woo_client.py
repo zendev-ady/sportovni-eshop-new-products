@@ -210,6 +210,19 @@ class WooClient:
             logger.error("products/batch request failed: %s — skipping batch", exc)
             return
 
+        created_count = len(resp.get("create", []))
+        updated_count = len(resp.get("update", []))
+        errors_in_resp = [
+            item for item in resp.get("create", []) + resp.get("update", [])
+            if item.get("error")
+        ]
+        logger.info(
+            "products/batch — created: %d, updated: %d, errors: %d",
+            created_count, updated_count, len(errors_in_resp),
+        )
+        for item in errors_in_resp:
+            logger.error("  SKU %s: %s", item.get("sku", "?"), item["error"].get("message", ""))
+
         # Map returned IDs back to pending items by SKU
         parent_id_map: dict = {}  # sku → wc_id
 
@@ -229,11 +242,21 @@ class WooClient:
             # Prefer freshly returned ID, fall back to cache (already-existing update)
             wc_id = parent_id_map.get(parent_sku) or get_id(self._conn, parent_sku)
             if not wc_id:
-                logger.error(
-                    "No WooCommerce ID for parent SKU %s — skipping its variations",
+                # WC sometimes omits 'sku' in batch response — do a GET lookup.
+                logger.warning(
+                    "Parent SKU %s not in batch response — falling back to GET lookup",
                     parent_sku,
                 )
-                continue
+                wc_id = self._fetch_id_by_sku(parent_sku)
+                if wc_id:
+                    set_id(self._conn, parent_sku, wc_id)
+                    self._conn.commit()
+                else:
+                    logger.error(
+                        "Could not resolve WooCommerce ID for parent SKU %s — skipping its variations",
+                        parent_sku,
+                    )
+                    continue
             self._send_variations_batch(wc_id, group, variation_payloads)
 
         self._conn.commit()
@@ -269,6 +292,12 @@ class WooClient:
         if wc_id and sku:
             set_id(self._conn, sku, wc_id)
             parent_id_map[sku] = wc_id
+        elif wc_id and not sku:
+            logger.warning(
+                "WooCommerce returned product id=%d with no sku — cannot cache; "
+                "variations will fall back to GET lookup",
+                wc_id,
+            )
 
     def _send_variations_batch(
         self,
