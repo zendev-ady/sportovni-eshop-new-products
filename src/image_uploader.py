@@ -89,18 +89,58 @@ def _set_cached(conn: sqlite3.Connection, original_url: str, gcs_url: str) -> No
 
 _INVALID_CHARS = re.compile(r'[^a-zA-Z0-9._\-]')
 
+# Czech diacritics → ASCII transliteration map
+_CZECH_MAP = str.maketrans(
+    "áčďéěíňóřšťúůýžÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ",
+    "acdeeinorstuuyzACDEEINORSTUUYZ",
+)
+_NON_SLUG = re.compile(r'[^a-zA-Z0-9\-]')
+_MULTI_HYPHEN = re.compile(r'-{2,}')
 
-def _gcs_filename(url: str, sku: str, index: int) -> str:
+
+def _slugify(text: str) -> str:
     """
-    Derive a stable, collision-free GCS blob name.
+    Convert a Czech product name to a URL-safe hyphenated slug.
 
-    Format: {sku}-{index}{ext}  e.g. "015110-0.jpg", "uid9A3F-2.png"
-    sku is sanitized to filesystem-safe chars.
-    Falls back to md5(url)[:16]{ext} only when sku is empty.
+    Args:
+        text: Raw product name, possibly containing Czech diacritics.
+
+    Returns:
+        ASCII slug with diacritics removed and spaces replaced by hyphens.
+        Empty string if text is blank.
+    """
+    if not text:
+        return ""
+    slug = text.translate(_CZECH_MAP)
+    slug = slug.replace(" ", "-").replace("_", "-")
+    slug = _NON_SLUG.sub("", slug)
+    slug = _MULTI_HYPHEN.sub("-", slug)
+    return slug.strip("-")[:80]
+
+
+def _gcs_filename(url: str, sku: str, index: int, name: str = "") -> str:
+    """
+    Derive a stable, SEO-friendly GCS blob name.
+
+    Format when name is provided:
+        {sku}-{slug}-Sportovni-eshop-cz{ext}    (index 0 — main image)
+        {sku}-{slug}-Sportovni-eshop-cz2{ext}   (index 1 — first alt)
+        {sku}-{slug}-Sportovni-eshop-cz3{ext}   (index 2 — second alt)
+
+    Fallback when name is empty:
+        {sku}-{index}{ext}  e.g. "015110-0.jpg"
+
+    Falls back to md5(url)[:16]{ext} only when sku is also empty.
     """
     _, ext = os.path.splitext(os.path.basename(urlparse(url).path))
     if ext.lower() not in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
         ext = ".jpg"
+
+    if sku and name:
+        safe_sku = _INVALID_CHARS.sub("_", sku).strip("_")[:80]
+        slug = _slugify(name)
+        suffix = "" if index == 0 else str(index + 1)
+        return f"{safe_sku}-{slug}-Sportovni-eshop-cz{suffix}{ext}"
 
     if sku:
         safe_sku = _INVALID_CHARS.sub("_", sku).strip("_")[:80]
@@ -113,7 +153,7 @@ def _gcs_filename(url: str, sku: str, index: int) -> str:
 # Core upload logic
 # ---------------------------------------------------------------------------
 
-def _upload_to_gcs(original_url: str, bucket, sku: str, index: int) -> str | None:
+def _upload_to_gcs(original_url: str, bucket, sku: str, index: int, name: str = "") -> str | None:
     """
     Download image from original_url and upload it to GCS.
 
@@ -122,6 +162,7 @@ def _upload_to_gcs(original_url: str, bucket, sku: str, index: int) -> str | Non
         bucket:       google.cloud.storage.Bucket instance.
         sku:          Product or variation SKU — used in the GCS filename.
         index:        Image index within the product (0 = first/main image).
+        name:         Czech product name — used in the SEO filename slug.
 
     Returns:
         Public GCS URL string, or None on any error.
@@ -140,7 +181,7 @@ def _upload_to_gcs(original_url: str, bucket, sku: str, index: int) -> str | Non
         logger.error("Failed to download image %s: %s", original_url, exc)
         return None
 
-    filename = _gcs_filename(original_url, sku, index)
+    filename = _gcs_filename(original_url, sku, index, name)
     blob_name = GCS_IMAGE_PREFIX + filename
     blob = bucket.blob(blob_name)
 
@@ -156,7 +197,7 @@ def _upload_to_gcs(original_url: str, bucket, sku: str, index: int) -> str | Non
 
 
 def _resolve_one_stats(
-    url: str, conn: sqlite3.Connection, bucket, sku: str, index: int
+    url: str, conn: sqlite3.Connection, bucket, sku: str, index: int, name: str = ""
 ) -> tuple[str, int, int]:
     """
     Resolve a single URL.
@@ -169,7 +210,7 @@ def _resolve_one_stats(
     if cached:
         return cached, 1, 1
 
-    gcs_url = _upload_to_gcs(url, bucket, sku, index)
+    gcs_url = _upload_to_gcs(url, bucket, sku, index, name)
     if gcs_url:
         _set_cached(conn, url, gcs_url)
         return gcs_url, 0, 1
@@ -177,7 +218,7 @@ def _resolve_one_stats(
     logger.warning("Image upload failed, keeping original URL: %s", url)
     return url, 0, 0
 
-def resolve_images(groups: list[ProductGroup]) -> None:
+def resolve_images(groups: list[ProductGroup], translations: dict | None = None) -> None:
     """
     Replace all b2b supplier image URLs in-place with GCS public URLs.
 
@@ -185,7 +226,10 @@ def resolve_images(groups: list[ProductGroup]) -> None:
     On per-image failure: logs a warning, keeps original URL, continues.
 
     Args:
-        groups: List[ProductGroup] — mutated in-place.
+        groups:       List[ProductGroup] — mutated in-place.
+        translations: Optional dict mapping parent_sku → TranslatedGroup.
+                      When provided, Czech product names are used in GCS
+                      filenames for better SEO.
     """
     from google.cloud import storage  # deferred — optional dep in dry-run
 
@@ -199,9 +243,13 @@ def resolve_images(groups: list[ProductGroup]) -> None:
 
     try:
         for group in groups:
+            name = ""
+            if translations and group.parent_sku in translations:
+                name = translations[group.parent_sku].name_cs
+
             resolved = []
             for i, url in enumerate(group.images):
-                gcs_url, was_hit, ok = _resolve_one_stats(url, conn, bucket, group.parent_sku, i)
+                gcs_url, was_hit, ok = _resolve_one_stats(url, conn, bucket, group.parent_sku, i, name)
                 resolved.append(gcs_url)
                 total += 1
                 hits += was_hit
@@ -212,7 +260,7 @@ def resolve_images(groups: list[ProductGroup]) -> None:
             for v in group.variations:
                 resolved = []
                 for i, url in enumerate(v.images):
-                    gcs_url, was_hit, ok = _resolve_one_stats(url, conn, bucket, v.sku, i)
+                    gcs_url, was_hit, ok = _resolve_one_stats(url, conn, bucket, v.sku, i, name)
                     resolved.append(gcs_url)
                     total += 1
                     hits += was_hit
