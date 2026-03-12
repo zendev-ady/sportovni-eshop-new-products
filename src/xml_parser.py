@@ -27,7 +27,6 @@ Each returned dict has:
           size_label    str   (e.g. "XL", "42", "N/A")
 """
 
-import io
 import logging
 import xml.etree.ElementTree as ET
 from typing import Dict, List, Optional
@@ -64,8 +63,7 @@ def _open_source(source: str):
     if source.startswith("http://") or source.startswith("https://"):
         try:
             logger.info("Fetching XML from URL: %s", source)
-            response = urlopen(source)  # noqa: S310 — URL is from trusted config
-            return io.BytesIO(response.read())
+            return urlopen(source)  # noqa: S310 — URL is from trusted config
         except Exception as exc:
             raise RuntimeError(f"Failed to fetch XML from {source}: {exc}") from exc
     else:

@@ -19,10 +19,9 @@ import os
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "config"))
-import config
-import attr_maps
-from api_keys import OPENAI_API_KEY
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from config import config, attr_maps
+from config.api_keys import OPENAI_API_KEY
 from product_grouper import ProductGroup
 
 logger = logging.getLogger(__name__)
