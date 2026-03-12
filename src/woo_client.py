@@ -101,6 +101,7 @@ class WooClient:
     def upsert_group(
         self,
         group: ProductGroup,
+        translated,
         category_ids: list | None = None,
         category_slug: str = "default",
     ) -> None:
@@ -110,6 +111,7 @@ class WooClient:
 
         Args:
             group:         ProductGroup from product_grouper.
+            translated:    TranslatedGroup with Czech name, descriptions, attrs_cs.
             category_ids:  WooCommerce category IDs; [] until Phase 3.
             category_slug: Category slug for margin lookup in price_calculator.
         """
@@ -117,7 +119,7 @@ class WooClient:
             category_ids = []
 
         parent_wc_id = get_id(self._conn, group.parent_sku)
-        parent_payload = build_parent_payload(group, category_ids, wc_id=parent_wc_id)
+        parent_payload = build_parent_payload(group, category_ids, translated, wc_id=parent_wc_id)
 
         variation_payloads = []
         if group.kind != "simple":

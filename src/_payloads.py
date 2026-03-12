@@ -9,6 +9,7 @@ Attribute strategy (Phase 1):
     The 'variation' flag tells WooCommerce which attributes drive variations.
     Phase 4: migrate to global attributes (pa_barva, pa_velikost) for filters.
 """
+from __future__ import annotations
 
 import sys
 import os
@@ -16,14 +17,20 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config.config import WOO_ATTR_COLOUR, WOO_ATTR_SIZE
 from price_calculator import calculate_price
+import attribute_mapper
+
+from typing import TYPE_CHECKING
 
 # Re-export for callers that import from this module
 from product_grouper import ProductGroup, Variation
+if TYPE_CHECKING:
+    from translator import TranslatedGroup
 
 
 def build_parent_payload(
     group: ProductGroup,
     category_ids: list,
+    translated: TranslatedGroup,
     wc_id: int | None = None,
 ) -> dict:
     """
@@ -31,10 +38,12 @@ def build_parent_payload(
 
     For variable products: no price, no stock — both live on variations.
     For simple products: price and stock are set here directly.
+    All products receive Czech name, descriptions, and full attribute set.
 
     Args:
         group:        ProductGroup from product_grouper.
         category_ids: List of WooCommerce category IDs (empty list = no category).
+        translated:   TranslatedGroup with Czech name, descriptions, and attrs_cs.
         wc_id:        Existing WooCommerce ID if updating; None if creating.
 
     Returns:
@@ -43,14 +52,16 @@ def build_parent_payload(
     is_simple = group.kind == "simple"
 
     payload: dict = {
-        "sku":         group.parent_sku,
-        "name":        group.name,
-        "description": group.description,
-        "type":        "simple" if is_simple else "variable",
-        "status":      "publish",
-        "categories":  [{"id": cid} for cid in category_ids],
-        "images":      _image_list(group.images),
-        "meta_data":   _parent_meta(group),
+        "sku":               group.parent_sku,
+        "name":              translated.name_cs,
+        "description":       translated.long_description_cs,
+        "short_description": translated.short_description_cs,
+        "type":              "simple" if is_simple else "variable",
+        "status":            "publish",
+        "categories":        [{"id": cid} for cid in category_ids],
+        "images":            _image_list(group.images),
+        "meta_data":         _parent_meta(group),
+        "attributes":        attribute_mapper.build_parent_attributes(group, translated.attrs_cs),
     }
 
     if is_simple:
@@ -61,8 +72,6 @@ def build_parent_payload(
         payload["stock_quantity"] = v.quantity
         payload["manage_stock"]   = True
         payload["stock_status"]   = "instock" if v.quantity > 0 else "outofstock"
-    else:
-        payload["attributes"] = _parent_attributes(group)
 
     if wc_id is not None:
         payload["id"] = wc_id
@@ -96,7 +105,7 @@ def build_variation_payload(
         "stock_quantity": v.quantity,
         "manage_stock":   True,
         "stock_status":   "instock" if v.quantity > 0 else "outofstock",
-        "attributes":     _variation_attributes(v, group),
+        "attributes":     attribute_mapper.build_variation_attributes(v.colour, v.size_label, group.kind),
         "images":         [{"src": v.images[0]}] if v.images else [],
         "meta_data":      [{"key": "_ean", "value": v.ean}],
     }
@@ -110,72 +119,6 @@ def build_variation_payload(
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
-
-def _parent_attributes(group: ProductGroup) -> list:
-    """
-    Build the attributes list for a variable parent product.
-
-    Declares all possible values for each variation axis so WooCommerce
-    can construct the variation matrix. The 'variation' flag is True for
-    axes that drive variations; 'visible' is True for all so they show
-    in the product page.
-
-    Args:
-        group: ProductGroup with kind and variation list.
-
-    Returns:
-        List of attribute dicts.
-    """
-    attrs = []
-
-    if group.kind in ("colour_only", "colour_size"):
-        colours = list(dict.fromkeys(
-            v.colour for v in group.variations if v.colour
-        ))
-        attrs.append({
-            "name":      WOO_ATTR_COLOUR,
-            "options":   colours,
-            "variation": True,
-            "visible":   True,
-        })
-
-    if group.kind in ("size_only", "colour_size"):
-        sizes = list(dict.fromkeys(
-            v.size_label for v in group.variations if v.size_label not in ("", "N/A")
-        ))
-        attrs.append({
-            "name":      WOO_ATTR_SIZE,
-            "options":   sizes,
-            "variation": True,
-            "visible":   True,
-        })
-
-    return attrs
-
-
-def _variation_attributes(v: Variation, group: ProductGroup) -> list:
-    """
-    Build the attributes list for a single variation.
-
-    Each entry pins the variation to one specific attribute value.
-
-    Args:
-        v:     The variation.
-        group: Parent group (provides kind).
-
-    Returns:
-        List of attribute dicts with single-value options.
-    """
-    attrs = []
-
-    if group.kind in ("colour_only", "colour_size") and v.colour:
-        attrs.append({"name": WOO_ATTR_COLOUR, "option": v.colour})
-
-    if group.kind in ("size_only", "colour_size") and v.size_label not in ("", "N/A"):
-        attrs.append({"name": WOO_ATTR_SIZE, "option": v.size_label})
-
-    return attrs
-
 
 def _image_list(urls: list) -> list:
     """Convert a list of image URL strings to WooCommerce image dicts."""
