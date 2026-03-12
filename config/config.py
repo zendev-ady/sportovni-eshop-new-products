@@ -72,3 +72,12 @@ WOO_SKU_CACHE_DB = os.path.join(CACHE_DIR, "sku_cache.db")
 # Phase 4: migrate to global attributes (pa_barva, pa_velikost) for layered nav.
 WOO_ATTR_COLOUR = "Barva"
 WOO_ATTR_SIZE   = "Velikost"
+
+# ---------------------------------------------------------------------------
+# Google Cloud Storage — image hosting
+# ---------------------------------------------------------------------------
+GCS_BUCKET_NAME          = "sportovni-eshop-produkty-fotky"
+GCS_IMAGE_PREFIX         = "images/"
+GCS_PUBLIC_BASE          = "https://storage.googleapis.com/sportovni-eshop-produkty-fotky/images/"
+GCS_SERVICE_ACCOUNT_JSON = os.path.join(BASE_DIR, "config", "gcs-key.json")
+GCS_IMAGE_CACHE_DB       = os.path.join(CACHE_DIR, "image_cache.db")

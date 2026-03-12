@@ -1,3 +1,4 @@
 openai>=1.0.0
 requests>=2.31.0
 woocommerce>=3.0.0
+google-cloud-storage>=2.0.0

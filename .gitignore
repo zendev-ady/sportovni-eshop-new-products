@@ -1,4 +1,6 @@
 api_keys.py
+gcs-key.json
+.env
 cache/
 logs/
 *.pyc
