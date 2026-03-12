@@ -19,6 +19,12 @@ import os
 import sys
 from collections import Counter
 
+# Ensure Czech characters print correctly on Windows terminals.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 # Make src/ and config/ importable from this root directory.
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)                              # → config.config, config.api_keys
@@ -26,6 +32,7 @@ sys.path.insert(0, os.path.join(_HERE, "src"))         # → xml_parser, product
 
 import xml_parser
 import product_grouper
+import translator
 from price_calculator import calculate_price, get_eur_czk_rate
 from config.config import XML_SOURCE_URL, LOG_DIR
 
@@ -109,14 +116,22 @@ def _dry_run_summary(groups: list, limit: int | None) -> None:
         czk = calculate_price(v.wholesale_netto, weight)
         print(
             f"    [{g.kind:<12}] {g.name[:45]!r:50s}"
-            f"  {v.wholesale_netto:>7.2f} EUR  →  {czk:>6} CZK"
+            f"  {v.wholesale_netto:>7.2f} EUR  ->  {czk:>6} CZK"
         )
     print()
+    print("\n  Translation preview — first 3 groups (Czech name vs original):")
+    for g in groups[:3]:
+        t = translator.translate(g)
+        print(f"    EN: {g.name[:65]!r}")
+        print(f"    CS: {t.name_cs[:65]!r}")
+        if t.attrs_cs:
+            attrs_preview = ", ".join(
+                f"{k}={v[0]!r}" for k, v in list(t.attrs_cs.items())[:4]
+            )
+            print(f"    attrs_cs: {attrs_preview}")
+        print()
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 def main() -> None:
     args = _parse_args()
@@ -164,8 +179,9 @@ def main() -> None:
 
     with WooClient() as woo:
         for group in groups:
-            # Phase 1 stubs — Phase 3 will replace with category_mapper output
-            woo.upsert_group(group, category_ids=[], category_slug="default")
+            translated = translator.translate(group)
+            # Phase 2: Czech text wired in; Phase 3 will replace category stubs
+            woo.upsert_group(group, translated, category_ids=[], category_slug="default")
         woo.flush()
         drafted = woo.draft_disappeared(current_skus)
 
