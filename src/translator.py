@@ -21,7 +21,7 @@ from typing import Dict, List, Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import config, attr_maps
-from config.api_keys import OPENAI_API_KEY
+from config.api_keys import GITHUB_TOKEN
 from product_grouper import ProductGroup
 
 logger = logging.getLogger(__name__)
@@ -105,9 +105,10 @@ def _build_messages(text: str, trans_type: str, context: dict) -> list:
         )
         user = (
             f"Vytvoř český název produktu (50–70 znaků) podle formátu: "
-            f"{{pohlaví}} {{typ}} {{značka}} {{model}} {{detail}} {{barva}}.\n"
+            f"{{pohlaví}} {{typ}} {{značka}} {{model}} {{barva}}.\n"
             f"Originál: {text}\n"
             f"Značka: {producer} | Kategorie: {category} | Sport: {sport} | Pohlaví: {gender} | Barva: {colour}\n"
+            f"Barvu uveď jako přídavné jméno ve shodě s typem produktu (např. 'černé', 'černá', 'černý') — nikdy ne jako 's černým designem' ani jiné opisné spojení.\n"
             f"Vrať pouze výsledný název, bez uvozovek."
         )
         return [{"role": "system", "content": system}, {"role": "user", "content": user}]
@@ -146,14 +147,17 @@ def _build_messages(text: str, trans_type: str, context: dict) -> list:
 
 
 def _call_ai(text: str, trans_type: str, context: dict) -> str:
-    """Call OpenAI API. Raises on failure — caller handles logging."""
+    """Call GitHub Models inference API. Raises on failure — caller handles logging."""
     from openai import OpenAI
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    client = OpenAI(
+        base_url="https://models.github.ai/inference",
+        api_key=GITHUB_TOKEN,
+        max_retries=20,
+    )
     response = client.chat.completions.create(
         model=config.TRANSLATION_MODEL,
         messages=_build_messages(text, trans_type, context),
-        temperature=0.7,
-        max_tokens={"name": 100, "short_description": 600, "long_description": 1400}[trans_type],
+        max_completion_tokens={"name": 100, "short_description": 600, "long_description": 1400}[trans_type],
     )
     return response.choices[0].message.content.strip()
 
