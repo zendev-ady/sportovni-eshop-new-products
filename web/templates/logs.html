@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% block title %}Logy{% endblock %}
+
+{% block content %}
+<div class="flex flex-col h-full" x-data="logViewer()" x-init="init()">
+
+  <!-- Toolbar -->
+  <div class="flex items-center justify-between px-6 py-3 bg-white border-b border-slate-200 shrink-0">
+    <div class="flex items-center gap-3">
+      <h1 class="text-base font-semibold text-slate-800">Logy</h1>
+      <span x-show="running" x-cloak
+            class="flex items-center gap-1.5 text-xs bg-blue-50 text-blue-700 border border-blue-200 px-2 py-0.5 rounded-full">
+        <span class="w-1.5 h-1.5 bg-blue-500 rounded-full animate-pulse"></span>
+        Live
+      </span>
+      <span x-show="!running"
+            class="text-xs bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">
+        Archiv
+      </span>
+    </div>
+
+    <div class="flex items-center gap-3">
+      <!-- Filter buttons -->
+      <div class="flex items-center gap-1 text-xs">
+        <button @click="filter = ''"
+                :class="filter === '' ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'"
+                class="px-2.5 py-1 rounded-md transition-colors">Vše</button>
+        <button @click="filter = 'WARNING'"
+                :class="filter === 'WARNING' ? 'bg-yellow-500 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'"
+                class="px-2.5 py-1 rounded-md transition-colors">WARN</button>
+        <button @click="filter = 'ERROR'"
+                :class="filter === 'ERROR' ? 'bg-red-500 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'"
+                class="px-2.5 py-1 rounded-md transition-colors">ERROR</button>
+      </div>
+
+      <!-- Auto-scroll toggle -->
+      <label class="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer">
+        <input type="checkbox" x-model="autoScroll" class="rounded">
+        Auto-scroll
+      </label>
+
+      <!-- Stop button (only while running) -->
+      <form method="post" action="/sync/stop" x-show="running" x-cloak>
+        <button type="submit" class="btn-danger text-xs px-3 py-1.5">⏹ Zastavit</button>
+      </form>
+
+      <!-- Download button -->
+      <a href="/logs/download" class="btn-secondary text-xs px-3 py-1.5">↓ Stáhnout</a>
+    </div>
+  </div>
+
+  <!-- Log output -->
+  <div class="flex-1 overflow-y-auto bg-slate-950 p-4" id="log-output">
+    <pre id="log-pre" class="text-xs font-mono leading-5 whitespace-pre-wrap">{% for line in recent_lines %}<span class="log-line {% if 'ERROR' in line or 'CRITICAL' in line %}text-red-400{% elif 'WARNING' in line %}text-yellow-400{% else %}text-slate-300{% endif %}">{{ line | e }}
+</span>{% endfor %}</pre>
+  </div>
+
+  <!-- Status bar -->
+  <div class="shrink-0 bg-slate-900 border-t border-slate-700 px-4 py-1.5 flex items-center justify-between">
+    <span class="text-xs text-slate-400" x-text="lineCount + ' řádků'">0 řádků</span>
+    <span x-show="done" x-cloak
+          :class="exitCode === 0 ? 'text-emerald-400' : 'text-red-400'"
+          class="text-xs font-medium"
+          x-text="exitCode === 0 ? '✅ Dokončeno' : '❌ Chyba (exit ' + exitCode + ')'">
+    </span>
+  </div>
+
+</div>
+
+<script>
+function logViewer() {
+  return {
+    running:    {{ 'true' if running else 'false' }},
+    autoScroll: true,
+    filter:     '',
+    lineCount:  0,
+    done:       false,
+    exitCode:   null,
+    _source:    null,
+
+    init() {
+      this.lineCount = document.querySelectorAll('.log-line').length;
+      if (this.running) this._connect();
+      this._applyFilter();
+    },
+
+    _connect() {
+      this._source = new EventSource('/sync/stream');
+
+      this._source.onmessage = (e) => {
+        this._appendLine(e.data);
+      };
+
+      this._source.addEventListener('done', (e) => {
+        this.running  = false;
+        this.done     = true;
+        this.exitCode = parseInt(e.data);
+        this._source.close();
+      });
+
+      this._source.onerror = () => {
+        // If not explicitly done, try reconnecting (browser handles it)
+      };
+    },
+
+    _appendLine(text) {
+      if (this.filter && !text.includes(this.filter)) return;
+
+      const pre  = document.getElementById('log-pre');
+      const span = document.createElement('span');
+      span.className = 'log-line ' + this._lineClass(text);
+      span.textContent = text + '\n';
+      pre.appendChild(span);
+      this.lineCount++;
+
+      if (this.autoScroll) {
+        const out = document.getElementById('log-output');
+        out.scrollTop = out.scrollHeight;
+      }
+    },
+
+    _lineClass(line) {
+      if (line.includes('ERROR') || line.includes('CRITICAL')) return 'text-red-400';
+      if (line.includes('WARNING')) return 'text-yellow-400';
+      return 'text-slate-300';
+    },
+
+    _applyFilter() {
+      this.$watch('filter', (val) => {
+        document.querySelectorAll('.log-line').forEach(el => {
+          el.style.display = (!val || el.textContent.includes(val)) ? '' : 'none';
+        });
+      });
+    }
+  }
+}
+</script>
+{% endblock %}

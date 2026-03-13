@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}Cache{% endblock %}
+
+{% block content %}
+<div class="p-8 max-w-4xl mx-auto space-y-6">
+
+  <h1 class="text-2xl font-bold text-slate-900">Cache Manager</h1>
+
+  <!-- Flash messages -->
+  {% if request.query_params.get('cleared') %}
+  <div class="bg-emerald-50 border border-emerald-200 text-emerald-700 text-sm px-4 py-3 rounded-lg flex items-center gap-2">
+    ✅ Cache <strong>{{ request.query_params.get('cleared') }}</strong> vymazána
+    ({{ request.query_params.get('rows') }} záznamů odstraněno).
+  </div>
+  {% endif %}
+  {% if request.query_params.get('err') %}
+  <div class="bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3 rounded-lg">
+    ❌ Chyba: neznámá cache.
+  </div>
+  {% endif %}
+
+  <!-- Cache cards -->
+  <div class="grid gap-5 sm:grid-cols-1 lg:grid-cols-3">
+    {% for cache in caches %}
+    <div class="bg-white rounded-xl border border-slate-100 shadow-sm p-5 space-y-4"
+         x-data="{ confirm: false }">
+
+      <div class="flex items-start justify-between">
+        <div>
+          <div class="font-semibold text-slate-800">{{ cache.label }}</div>
+          <div class="text-xs text-slate-400 mt-0.5 font-mono">{{ cache.name }}.db</div>
+        </div>
+        {% if cache.exists %}
+          <span class="w-2 h-2 bg-emerald-400 rounded-full mt-1.5 shrink-0"></span>
+        {% else %}
+          <span class="w-2 h-2 bg-slate-300 rounded-full mt-1.5 shrink-0"></span>
+        {% endif %}
+      </div>
+
+      <div class="grid grid-cols-2 gap-3">
+        <div class="bg-slate-50 rounded-lg p-3 text-center">
+          <div class="text-xl font-bold text-slate-800">
+            {% if cache.rows >= 1000 %}
+              {{ (cache.rows / 1000) | round(1) }}k
+            {% else %}
+              {{ cache.rows }}
+            {% endif %}
+          </div>
+          <div class="text-xs text-slate-500 mt-0.5">záznamy</div>
+        </div>
+        <div class="bg-slate-50 rounded-lg p-3 text-center">
+          <div class="text-xl font-bold text-slate-800">{{ cache.size_human }}</div>
+          <div class="text-xs text-slate-500 mt-0.5">velikost</div>
+        </div>
+      </div>
+
+      <!-- Clear button with confirmation -->
+      {% if cache.exists and cache.rows > 0 %}
+      <div>
+        <button @click="confirm = true"
+                x-show="!confirm"
+                class="w-full text-sm text-red-600 hover:text-red-800 border border-red-200 hover:border-red-400 hover:bg-red-50 py-2 rounded-lg transition-colors">
+          🗑 Vymazat cache
+        </button>
+        <div x-show="confirm" x-cloak class="space-y-2">
+          <p class="text-xs text-red-700 text-center font-medium">Opravdu smazat {{ cache.rows }} záznamů?</p>
+          <div class="flex gap-2">
+            <form method="post" action="/cache/{{ cache.name }}/clear" class="flex-1">
+              <button type="submit"
+                      class="w-full text-sm bg-red-600 hover:bg-red-700 text-white py-2 rounded-lg transition-colors font-medium">
+                Ano, smazat
+              </button>
+            </form>
+            <button @click="confirm = false"
+                    class="flex-1 text-sm bg-slate-100 hover:bg-slate-200 text-slate-700 py-2 rounded-lg transition-colors">
+              Zrušit
+            </button>
+          </div>
+        </div>
+      </div>
+      {% elif not cache.exists %}
+      <div class="text-xs text-slate-400 text-center py-1">Soubor neexistuje</div>
+      {% else %}
+      <div class="text-xs text-slate-400 text-center py-1">Cache je prázdná</div>
+      {% endif %}
+
+    </div>
+    {% endfor %}
+  </div>
+
+  <!-- Info box -->
+  <div class="bg-amber-50 border border-amber-200 rounded-lg px-5 py-4 text-sm text-amber-800 space-y-1">
+    <div class="font-semibold">⚠️ Poznámky k mazání cache</div>
+    <ul class="list-disc list-inside space-y-0.5 text-xs mt-2">
+      <li><strong>SKU cache</strong> — po smazání bude příští sync znovu načítat všechny WC ID přes API (pomalejší, ale bezpečné)</li>
+      <li><strong>Translation cache</strong> — po smazání se znovu volá OpenAI pro překlady (zvýšené náklady)</li>
+      <li><strong>Image cache</strong> — po smazání se znovu uploadují obrázky do GCS (pomalejší start)</li>
+    </ul>
+  </div>
+
+</div>
+{% endblock %}
