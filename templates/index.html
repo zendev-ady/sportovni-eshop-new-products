@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>B2B Sync</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #111318;
+      color: #d1d5db;
+      min-height: 100vh;
+      padding: 2.5rem 1rem;
+    }
+
+    .wrap {
+      max-width: 780px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+    }
+
+    /* ── Header ── */
+    header h1 {
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: #f3f4f6;
+    }
+    header p {
+      margin-top: 0.25rem;
+      font-size: 0.82rem;
+      color: #6b7280;
+    }
+
+    /* ── Sections ── */
+    section {
+      background: #1c1f27;
+      border: 1px solid #2a2d38;
+      border-radius: 10px;
+      padding: 1.25rem 1.5rem;
+    }
+    section + section { }
+
+    .section-label {
+      font-size: 0.7rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #6b7280;
+      margin-bottom: 0.75rem;
+    }
+
+    /* ── Textarea ── */
+    textarea {
+      width: 100%;
+      height: 200px;
+      background: #13151b;
+      border: 1.5px solid #2a2d38;
+      border-radius: 7px;
+      color: #e5e7eb;
+      font-family: "Consolas", "Cascadia Code", monospace;
+      font-size: 0.8rem;
+      line-height: 1.55;
+      padding: 0.7rem 0.9rem;
+      resize: vertical;
+      outline: none;
+      transition: border-color 0.12s;
+    }
+    textarea:focus { border-color: #4f46e5; }
+    textarea::placeholder { color: #374151; }
+
+    /* ── Controls row ── */
+    .controls {
+      display: flex;
+      gap: 1.25rem;
+      align-items: flex-end;
+      margin-bottom: 1rem;
+      flex-wrap: wrap;
+    }
+    .ctrl {
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+    .ctrl-label {
+      font-size: 0.7rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: #6b7280;
+    }
+    .ctrl-limit input {
+      width: 90px;
+      background: #13151b;
+      border: 1.5px solid #2a2d38;
+      border-radius: 8px;
+      color: #e5e7eb;
+      font-size: 0.82rem;
+      font-family: inherit;
+      padding: 0.44rem 0.7rem;
+      outline: none;
+      transition: border-color 0.12s;
+    }
+    .ctrl-limit input:focus  { border-color: #4f46e5; }
+    .ctrl-limit input::placeholder { color: #374151; }
+
+    /* ── Seg switcher ── */
+    .seg {
+      display: inline-flex;
+      background: #13151b;
+      border: 1.5px solid #2a2d38;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .seg input[type=radio] { display: none; }
+    .seg label {
+      padding: 0.45rem 1.1rem;
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: #6b7280;
+      cursor: pointer;
+      transition: background 0.12s, color 0.12s;
+      user-select: none;
+    }
+    .seg label:first-of-type { border-right: 1.5px solid #2a2d38; }
+    .seg input[value="dry"]:checked    ~ label[for="mode-dry"]    { background: #2d2f3d; color: #a5b4fc; }
+    .seg input[value="live"]:checked   ~ label[for="mode-live"]   { background: #1a3a2a; color: #4ade80; }
+    .seg input[value="remote"]:checked ~ label[for="src-remote"]  { background: #2d2f3d; color: #a5b4fc; }
+    .seg input[value="local"]:checked  ~ label[for="src-local"]   { background: #2d2f3d; color: #fbbf24; }
+    .seg input[value="wait"]:checked   ~ label[for="rl-wait"]     { background: #2d2f3d; color: #a5b4fc; }
+    .seg input[value="skip"]:checked   ~ label[for="rl-skip"]     { background: #422006; color: #fdba74; }
+
+    /* ── Run button ── */
+    #btn-run {
+      width: 100%;
+      padding: 0.85rem 1rem;
+      border: none;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: 700;
+      cursor: pointer;
+      letter-spacing: 0.01em;
+      transition: filter 0.12s, transform 0.08s;
+    }
+    #btn-run:not(:disabled):hover  { filter: brightness(1.1); }
+    #btn-run:not(:disabled):active { transform: scale(0.985); }
+    #btn-run:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    #btn-run.mode-dry  { background: #3730a3; color: #c7d2fe; }
+    #btn-run.mode-live { background: #15803d; color: #dcfce7; }
+    #btn-run.running   { background: #374151; color: #9ca3af; }
+
+    #btn-stop {
+      width: 100%;
+      margin-top: 0.5rem;
+      padding: 0.65rem 1rem;
+      border: none;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-weight: 700;
+      cursor: pointer;
+      background: #7f1d1d;
+      color: #fca5a5;
+      transition: filter 0.12s;
+      display: none;
+    }
+    #btn-stop:hover { filter: brightness(1.2); }
+
+    /* ── Status bar ── */
+    #status-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 1.4rem;
+    }
+    #status-text {
+      font-size: 0.82rem;
+      color: #6b7280;
+    }
+    #status-text.running { color: #fbbf24; }
+    #status-text.done    { color: #4ade80; }
+    #status-text.error   { color: #f87171; }
+
+    #btn-clear {
+      font-size: 0.75rem;
+      color: #4b5563;
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 0;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+    #btn-clear:hover { color: #9ca3af; }
+
+    /* ── Log ── */
+    #log {
+      background: #0d0f14;
+      border: 1.5px solid #1f2230;
+      border-radius: 7px;
+      padding: 0.7rem 0.9rem;
+      height: 360px;
+      overflow-y: auto;
+      font-family: "Consolas", "Cascadia Code", monospace;
+      font-size: 0.77rem;
+      line-height: 1.65;
+      color: #6b7280;
+    }
+    #log:empty::before {
+      content: "Výstup se zobrazí zde…";
+      color: #2d3142;
+    }
+    #log .l-info    { color: #6b7280; }
+    #log .l-warn    { color: #f59e0b; }
+    #log .l-error   { color: #ef4444; }
+    #log .l-done    { color: #4ade80; font-weight: 700; }
+    #log .l-sep     { color: #374151; }
+    #log .l-dry     { color: #818cf8; }
+    #log .l-divider { color: #1f2937; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>B2B → WooCommerce</h1>
+    <p>Vlož URL produktů z b2bsportswholesale.net — jeden na řádek. Řádky začínající # jsou ignorovány.</p>
+  </header>
+
+  <!-- URL input -->
+  <section>
+    <div class="section-label">URL produktů</div>
+    <textarea id="urls" spellcheck="false"
+      placeholder="https://b2bsportswholesale.net/adidas-copa-mundial-fg-015110-football-boots-1359&#10;https://b2bsportswholesale.net/nike-mercurial-fg-..."></textarea>
+  </section>
+
+  <!-- Config + Run -->
+  <section>
+    <div class="section-label">Konfigurace spuštění</div>
+    <div class="controls">
+
+      <div class="ctrl">
+        <span class="ctrl-label">Režim</span>
+        <div class="seg">
+          <input type="radio" name="mode" id="mode-dry"  value="dry"  checked>
+          <label for="mode-dry">Náhled</label>
+          <input type="radio" name="mode" id="mode-live" value="live">
+          <label for="mode-live">Živý sync</label>
+        </div>
+      </div>
+
+      <div class="ctrl">
+        <span class="ctrl-label">XML zdroj</span>
+        <div class="seg">
+          <input type="radio" name="source" id="src-remote" value="remote" checked>
+          <label for="src-remote">Remote</label>
+          <input type="radio" name="source" id="src-local"  value="local">
+          <label for="src-local">Lokální</label>
+        </div>
+      </div>
+
+      <div class="ctrl">
+        <span class="ctrl-label">429 Rate limit</span>
+        <div class="seg">
+          <input type="radio" name="ratelimit" id="rl-wait" value="wait" checked>
+          <label for="rl-wait">Čekat</label>
+          <input type="radio" name="ratelimit" id="rl-skip" value="skip">
+          <label for="rl-skip">Přeskočit</label>
+        </div>
+      </div>
+
+      <div class="ctrl ctrl-limit">
+        <span class="ctrl-label">Limit skupin</span>
+        <input type="number" id="cfg-limit" min="1" placeholder="vše">
+      </div>
+
+    </div>
+    <button id="btn-run" class="mode-dry">🔍 Spustit náhled</button>
+    <button id="btn-stop" type="button">⏹ Zastavit sync</button>
+  </section>
+
+  <!-- Status + log -->
+  <section>
+    <div class="section-label">Výstup</div>
+    <div id="status-bar">
+      <span id="status-text"></span>
+      <button id="btn-clear" type="button">Vymazat</button>
+    </div>
+    <div id="log" style="margin-top:0.6rem;"></div>
+  </section>
+
+</div>
+
+<script>
+  const urlsEl     = document.getElementById("urls");
+  const btnRun     = document.getElementById("btn-run");
+  const btnStop    = document.getElementById("btn-stop");
+  const logEl      = document.getElementById("log");
+  const statusTxt  = document.getElementById("status-text");
+  const btnClear   = document.getElementById("btn-clear");
+  const modeRadios = document.querySelectorAll("input[name=mode]");
+
+  const LABELS = { dry: "🔍 Spustit náhled", live: "⚡ Synchronizovat" };
+
+  let running = false;
+
+  function currentMode() {
+    return [...modeRadios].find(r => r.checked)?.value ?? "dry";
+  }
+
+  function currentRateLimit() {
+    return document.querySelector("input[name=ratelimit]:checked")?.value ?? "wait";
+  }
+
+  function setRunning(state) {
+    running = state;
+    btnRun.disabled  = state;
+    btnStop.style.display = state ? "" : "none";
+    updateModeUI();
+  }
+
+  function updateModeUI() {
+    const m = currentMode();
+    btnRun.textContent = LABELS[m];
+    btnRun.className   = running ? "running" : `mode-${m}`;
+  }
+
+  modeRadios.forEach(r => r.addEventListener("change", updateModeUI));
+  updateModeUI();
+
+  // ── Logging ──
+  function appendLine(text) {
+    if (!text.trim()) return;
+    const d = document.createElement("div");
+    d.textContent = text;
+    const t = text.toLowerCase();
+    if      (text.startsWith("──") || text.startsWith("—"))       d.className = "l-sep";
+    else if (text.startsWith("===") || text.startsWith("  ["))    d.className = "l-dry";
+    else if (t.includes("warning") || t.includes("⚠"))            d.className = "l-warn";
+    else if (t.includes("error") || t.includes("critical") || t.includes("❌")) d.className = "l-error";
+    else if (text.startsWith("✅") || t.includes("dokončen") || t.includes("hotovo")) d.className = "l-done";
+    else                                                            d.className = "l-info";
+    logEl.appendChild(d);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  // ── Stop ──
+  btnStop.addEventListener("click", () => {
+    fetch("/stop", { method: "POST" })
+      .then(r => r.json())
+      .then(d => appendLine(d.ok ? "⏹ Sync zastaven." : "⚠️ " + d.message))
+      .catch(() => appendLine("❌ Chyba při zastavení."));
+  });
+
+  // ── Run ──
+  btnRun.addEventListener("click", () => {
+    if (running) return;
+    const urls = urlsEl.value.trim();
+    if (!urls) { appendLine("⚠️ Žádné URL nebyly zadány."); return; }
+
+    const mode = currentMode();
+    setRunning(true);
+    statusTxt.textContent = "⏳ Probíhá…";
+    statusTxt.className = "running";
+
+    const sep = document.createElement("div");
+    sep.className = "l-sep";
+    sep.textContent = `── ${mode === "dry" ? "NÁHLED" : "SYNC"} · ${new Date().toLocaleTimeString("cs-CZ")} ─────────────────────`;
+    logEl.appendChild(sep);
+
+    const body = new URLSearchParams();
+    body.append("urls_text", urls);
+    body.append("dry_run", mode === "dry" ? "on" : "off");
+    const limit  = document.getElementById("cfg-limit").value.trim();
+    const source = document.querySelector("input[name=source]:checked")?.value ?? "remote";
+    const rl     = currentRateLimit();
+    if (limit)               body.append("limit",  limit);
+    if (source === "local")  body.append("source", "local");
+    if (rl === "skip")       body.append("skip_on_rate_limit", "on");
+
+    fetch("/sync", { method: "POST", body })
+      .then(res => {
+        const reader = res.body.getReader();
+        const dec = new TextDecoder();
+        let buf = "";
+
+        (function pump() {
+          reader.read().then(({ done, value }) => {
+            if (done) { finish(true); return; }
+            buf += dec.decode(value, { stream: true });
+            const parts = buf.split("\n\n");
+            buf = parts.pop();
+            for (const part of parts) {
+              const line = part.trim();
+              if (!line.startsWith("data:")) continue;
+              const msg = line.slice(5).trim();
+              if (msg === "__DONE__") { finish(true); return; }
+              appendLine(msg.replace(/↵/g, " "));
+            }
+            pump();
+          }).catch(err => { appendLine(`❌ Stream: ${err}`); finish(false); });
+        })();
+      })
+      .catch(err => { appendLine(`❌ Připojení: ${err}`); finish(false); });
+
+    function finish(ok) {
+      setRunning(false);
+      statusTxt.textContent = ok ? "Hotovo" : "Chyba";
+      statusTxt.className   = ok ? "done" : "error";
+    }
+  });
+
+  btnClear.addEventListener("click", () => {
+    logEl.innerHTML = "";
+    statusTxt.textContent = "";
+    statusTxt.className = "";
+  });
+</script>
+</body>
+</html>

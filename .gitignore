@@ -5,3 +5,4 @@ cache/
 logs/
 *.pyc
 __pycache__/
+partner_b2b_full.xml

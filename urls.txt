@@ -1,0 +1,78 @@
+# B2B → WooCommerce — výběr produktů
+# =====================================
+# Vlož URL produktů ze stránky b2bsportswholesale.net, jeden na řádek.
+# Řádky začínající # jsou ignorovány (komentáře).
+# Prázdné řádky jsou ignorovány.
+#
+# Příklad:
+# https://b2bsportswholesale.net/adidas-copa-mundial-fg-015110-football-boots-1359
+# https://b2bsportswholesale.net/adidas-kaiser-5-liga-fg-033201-football-boots-1366
+#
+# Spuštění:
+#   python select_sync.py --dry-run    (náhled bez zápisu do WooCommerce)
+#   python select_sync.py              (živá synchronizace)
+#
+# Nebo použij webové rozhraní:
+#   python web_ui.py  →  http://localhost:8000
+
+https://b2bsportswholesale.net/adidas-condivo-22-training-12-zip-m-hd2312-sweatshirt-884133
+https://b2bsportswholesale.net/mens-adidas-tiro-26-travel-crew-sweatshirt-white-kd3323-2165298
+https://b2bsportswholesale.net/adidas-tiro-26-travel-crew-mens-sweatshirt-red-kd3324-2165290
+https://b2bsportswholesale.net/mens-adidas-tiro-26-travel-crew-sweatshirt-blue-kd1146-2165289
+https://b2bsportswholesale.net/mens-adidas-tiro-26-travel-crew-sweatshirt-navy-blue-kd1145-2165288
+https://b2bsportswholesale.net/fila-rifredi-mens-sweatshirt-black-fam1218-80010-2146251
+https://b2bsportswholesale.net/fila-rifredi-mens-sweatshirt-red-fam1218-30002-2146250
+https://b2bsportswholesale.net/mens-adidas-tiro-26-league-sweat-crew-navy-blue-and-white-kf5816-2146232
+https://b2bsportswholesale.net/mens-adidas-tiro-26-league-sweat-crew-light-gray-kf3415-2146231
+https://b2bsportswholesale.net/mens-adidas-tiro-26-league-sweat-crew-black-and-white-kf3413-2146230
+https://b2bsportswholesale.net/adidas-tiro-26-league-training-mens-sweatshirt-gray-jy7204-2101364
+https://b2bsportswholesale.net/adidas-football-crew-performance-socks-green-ke7269-2101363
+https://b2bsportswholesale.net/mens-adidas-tiro-26-league-sweat-full-zip-hoodie-navy-blue-kf3320-2101345
+https://b2bsportswholesale.net/mens-adidas-tiro-26-league-sweat-full-zip-hoodie-red-kf9106-2101346
+https://b2bsportswholesale.net/mens-adidas-tiro-26-league-sweat-full-zip-hoody-gray-kf3319-2101343
+https://b2bsportswholesale.net/birkenstock-arizona-51791-flip-flops-506872
+https://b2bsportswholesale.net/adidas-handball-spezial-m-bd7633-shoes-654576
+https://b2bsportswholesale.net/garmont-t8-extreme-evo-gtx-regular-m-shoes-92800591787-1035188
+https://b2bsportswholesale.net/birkenstock-arizona-51191-flip-flops-506871
+https://b2bsportswholesale.net/nike-hyperset-2-fq7070-101-volleyball-shoes-1156904
+https://b2bsportswholesale.net/vans-old-skool-shoes-vd3hy28-505696
+https://b2bsportswholesale.net/crocs-classic-10001-001-flip-flops-505598
+https://b2bsportswholesale.net/bata-industrials-summ-one-u-mli-b81b1-shoes-black-911971
+https://b2bsportswholesale.net/adidas-superstar-ii-m-ji0079-shoes-1522377
+https://b2bsportswholesale.net/nike-air-force-1-07-m-cw2288-001-shoes-836088
+https://b2bsportswholesale.net/nike-everyday-cushion-crew-6pak-socks-sx7666-100-479212
+https://b2bsportswholesale.net/nike-everyday-cush-3p-socks-sx7664-010-1051346
+https://b2bsportswholesale.net/hi-tec-neti-ii-jacket-m-92800360280-850329
+https://b2bsportswholesale.net/puma-team-rise-m-tracksuit-658653-02-1074467
+https://b2bsportswholesale.net/nike-everyday-cushion-ankle-3pak-m-socks-sx7667-100-476813
+https://b2bsportswholesale.net/nike-park-20-crew-fleece-m-cw6902-010-sweatshirt-618657
+https://b2bsportswholesale.net/adidas-3-stripes-cushioned-sportswear-mid-cut-socks-3p-ht3456-1072693
+https://b2bsportswholesale.net/nike-everyday-cushion-crew-sx7664-100-socks-466069
+https://b2bsportswholesale.net/nike-park-vii-m-bv6708-010-t-shirt-550918
+https://b2bsportswholesale.net/football-adidas-world-cup-26-trionda-league-box-jd8045-1719504
+https://b2bsportswholesale.net/adidas-ucl-pro-2526-league-stage-football-champions-league-jd0188-1597244
+https://b2bsportswholesale.net/under-armour-1364180-002-black-training-urban-sports-backpack-1071692
+https://b2bsportswholesale.net/nike-academy-team-cu8090-010-bag-618196
+https://b2bsportswholesale.net/adidas-fifa-world-cup-26-trionda-pro-jd8021-football-1719501
+https://b2bsportswholesale.net/football-adidas-fifa-world-cup-26-trionda-league-jd8030-fifa-quality-certificate-1730089
+https://b2bsportswholesale.net/nike-academy-team-cu8089-010-bag-618186
+https://b2bsportswholesale.net/mikasa-beach-pro-bv550c-beach-volleyball-961071
+https://b2bsportswholesale.net/nike-academy-da5435-010-bag-641338
+https://b2bsportswholesale.net/adidas-power-organizer-kc6921-2186383
+https://b2bsportswholesale.net/puma-football-liga-socks-m-703441-06-478727
+https://b2bsportswholesale.net/nike-liverpool-fc-rise-cap-fn4877-687-1070331
+
+# tenhle ma spoustu barevnych variant
+https://b2bsportswholesale.net/nike-dry-park-vii-jsy-ss-m-bv6708-657-t-shirt-550400
+https://b2bsportswholesale.net/football-meteor-spin-1-17258-1176206
+https://b2bsportswholesale.net/nike-dri-fit-park-20-track-m-fj3022-100-sweatshirt-1059781
+https://b2bsportswholesale.net/football-adidas-fussballliebe-euro24-club-in9371-1020987
+
+
+
+
+
+
+
+
+
