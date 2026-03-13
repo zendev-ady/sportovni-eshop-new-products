@@ -204,33 +204,41 @@ class WooClient:
         if updates:
             batch["update"] = [p[1] for p in updates]
 
+        # Build position→SKU maps from the request payloads.
+        # WC never echoes sku in batch error response items, so we recover it by index.
+        create_sku_by_idx = {i: p[1].get("sku", "") for i, p in enumerate(creates)}
+        update_sku_by_idx = {i: p[1].get("sku", "") for i, p in enumerate(updates)}
+
         try:
             resp = self._api.post("products/batch", batch).json()
         except Exception as exc:
             logger.error("products/batch request failed: %s — skipping batch", exc)
             return
 
-        created_count = len(resp.get("create", []))
-        updated_count = len(resp.get("update", []))
-        errors_in_resp = [
-            item for item in resp.get("create", []) + resp.get("update", [])
-            if item.get("error")
-        ]
-        logger.info(
-            "products/batch — created: %d, updated: %d, errors: %d",
-            created_count, updated_count, len(errors_in_resp),
-        )
-        for item in errors_in_resp:
-            logger.error("  SKU %s: %s", item.get("sku", "?"), item["error"].get("message", ""))
-
-        # Map returned IDs back to pending items by SKU
+        # Map returned IDs back to pending items by SKU.
+        # Inject SKU by position before processing so _handle_parent_response has it.
         parent_id_map: dict = {}  # sku → wc_id
 
-        for item in resp.get("create", []):
+        resp_creates = resp.get("create", [])
+        resp_updates = resp.get("update", [])
+
+        for idx, item in enumerate(resp_creates):
+            if not item.get("sku"):
+                item["sku"] = create_sku_by_idx.get(idx, "")
             self._handle_parent_response(item, parent_id_map)
 
-        for item in resp.get("update", []):
+        for idx, item in enumerate(resp_updates):
+            if not item.get("sku"):
+                item["sku"] = update_sku_by_idx.get(idx, "")
             self._handle_parent_response(item, parent_id_map)
+
+        ok_creates = sum(1 for item in resp_creates if not item.get("error"))
+        ok_updates = sum(1 for item in resp_updates if not item.get("error"))
+        errors_count = sum(1 for item in resp_creates + resp_updates if item.get("error"))
+        logger.info(
+            "products/batch — created: %d, updated: %d, errors: %d",
+            ok_creates, ok_updates, errors_count,
+        )
 
         self._conn.commit()
 
@@ -278,12 +286,20 @@ class WooClient:
         if error:
             code = error.get("code", "")
             msg = error.get("message", "")
-            if "already exists" in msg.lower() or code == "product_invalid_sku":
-                # Product is in WC but not in our cache — fetch and cache its ID
-                wc_id = self._fetch_id_by_sku(sku)
-                if wc_id:
-                    set_id(self._conn, sku, wc_id)
-                    parent_id_map[sku] = wc_id
+            is_duplicate = (
+                "already exists" in msg.lower()
+                or "duplicitní" in msg.lower()
+                or code == "product_invalid_sku"
+            )
+            if is_duplicate:
+                # Product is in WC but not in our cache — fetch and cache its ID.
+                if sku:
+                    wc_id = self._fetch_id_by_sku(sku)
+                    if wc_id:
+                        set_id(self._conn, sku, wc_id)
+                        parent_id_map[sku] = wc_id
+                else:
+                    logger.warning("Duplicate SKU error but sku unknown — cannot recover")
             else:
                 logger.error("Parent SKU %s error: [%s] %s", sku, code, msg)
             return
