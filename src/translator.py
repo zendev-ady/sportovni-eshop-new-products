@@ -23,15 +23,14 @@ from typing import Dict, List, Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import config, attr_maps
-from config.api_keys import GEMINI_API_KEY
+from config.api_keys import KILOCODE_API_KEY
 from product_grouper import ProductGroup
 
 logger = logging.getLogger(__name__)
 
-# Gemini Free Tier: 15 RPM → min 4s between calls.
-# _last_call_time tracks last AI call; throttle adds extra buffer on 429.
-_last_call_time: float = 0.0
-_MIN_INTERVAL = 4.1  # seconds between calls (slightly over 4s as buffer)
+# Circuit breaker — set True after all retries are exhausted.
+# All subsequent AI calls in this process run fail immediately.
+_rate_limit_tripped: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -166,24 +165,21 @@ def _strip_code_fence(text: str) -> str:
 
 
 def _call_ai(text: str, trans_type: str, context: dict) -> str:
-    """Call Gemini API via OpenAI-compatible endpoint. Raises on failure — caller handles logging."""
-    global _last_call_time
+    """Call Kilo AI Gateway (OpenAI-compatible). Raises on failure — caller handles logging."""
+    global _rate_limit_tripped
     from openai import OpenAI, RateLimitError
 
-    # Proactive throttle — keep under 15 RPM
-    elapsed = time.monotonic() - _last_call_time
-    if elapsed < _MIN_INTERVAL:
-        time.sleep(_MIN_INTERVAL - elapsed)
+    if _rate_limit_tripped:
+        raise RuntimeError("Rate limit: circuit open — přeskočeno")
 
     client = OpenAI(
-        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-        api_key=GEMINI_API_KEY,
+        base_url="https://api.kilo.ai/api/gateway",
+        api_key=KILOCODE_API_KEY,
         max_retries=0,  # we handle retries manually below
     )
 
     for attempt in range(5):
         try:
-            _last_call_time = time.monotonic()
             response = client.chat.completions.create(
                 model=config.TRANSLATION_MODEL,
                 messages=_build_messages(text, trans_type, context),
@@ -191,12 +187,15 @@ def _call_ai(text: str, trans_type: str, context: dict) -> str:
             )
             return _strip_code_fence(response.choices[0].message.content)
         except RateLimitError:
-            wait = _MIN_INTERVAL * (2 ** attempt)
+            if config.SKIP_ON_RATE_LIMIT:
+                raise RuntimeError("Rate limit: skip_on_rate_limit=True — přeskočeno")
+            wait = 4.1 * (2 ** attempt)
             logger.warning("Rate limit hit, waiting %.1fs (attempt %d/5)", wait, attempt + 1)
             time.sleep(wait)
-            _last_call_time = time.monotonic()
 
-    raise RuntimeError("Gemini rate limit: all 5 retry attempts exhausted")
+    _rate_limit_tripped = True
+    logger.warning("Rate limit: všechny pokusy vyčerpány — překlady přeskočeny pro zbytek tohoto běhu")
+    raise RuntimeError("Rate limit: all 5 retry attempts exhausted")
 
 
 # ---------------------------------------------------------------------------

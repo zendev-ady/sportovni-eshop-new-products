@@ -36,6 +36,7 @@ ATTRIBUTE_NAME_MAP: dict[str, str] = {
     "Goalkeeper equipment":     "",
     "Referee equipment":        "",
     "Product Type":             "",
+    "Personalization":          "",
 }
 
 COLOUR: dict[str, str] = {

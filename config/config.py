@@ -57,8 +57,9 @@ MARGINS = {
 # ---------------------------------------------------------------------------
 # Translation
 # ---------------------------------------------------------------------------
-TRANSLATION_MODEL = "gemini-2.0-flash"
-SKIP_TRANSLATION = False  # set True to bypass AI calls (uses English text as-is)
+TRANSLATION_MODEL = "openai/gpt-4o"
+SKIP_TRANSLATION = False      # set True to bypass AI calls (uses English text as-is)
+SKIP_ON_RATE_LIMIT = False    # set True to skip translation immediately on 429 instead of waiting
 TRANSLATION_DB = os.path.join(CACHE_DIR, "translations.db")
 
 # ---------------------------------------------------------------------------
