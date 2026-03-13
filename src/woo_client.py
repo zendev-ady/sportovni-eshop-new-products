@@ -369,13 +369,7 @@ class WooClient:
         Returns:
             WooCommerce product ID, or None on failure.
         """
-        try:
-            results = self._api.get("products", params={"sku": sku}).json()
-            if results and isinstance(results, list):
-                return results[0].get("id")
-        except Exception as exc:
-            logger.error("GET products?sku=%s failed: %s", sku, exc)
-        return None
+        return self._get_first_id("products", {"sku": sku}, f"GET products?sku={sku}")
 
     def _fetch_variation_id_by_sku(
         self, parent_wc_id: int, sku: str
@@ -391,14 +385,31 @@ class WooClient:
         Returns:
             WooCommerce variation ID, or None on failure.
         """
+        return self._get_first_id(
+            f"products/{parent_wc_id}/variations",
+            {"sku": sku},
+            f"GET variations?sku={sku} (parent wc_id={parent_wc_id})",
+        )
+
+    def _get_first_id(self, endpoint: str, params: dict, label: str) -> int | None:
+        """
+        GET the given endpoint with params and return the 'id' of the first result.
+
+        Shared by _fetch_id_by_sku and _fetch_variation_id_by_sku to avoid
+        duplicated try/except boilerplate.
+
+        Args:
+            endpoint: WooCommerce REST API endpoint (e.g. "products").
+            params:   Query params dict (e.g. {"sku": "ABC123"}).
+            label:    Human-readable description for error logging.
+
+        Returns:
+            Integer WooCommerce ID, or None if not found or on any error.
+        """
         try:
-            endpoint = f"products/{parent_wc_id}/variations"
-            results = self._api.get(endpoint, params={"sku": sku}).json()
+            results = self._api.get(endpoint, params=params).json()
             if results and isinstance(results, list):
                 return results[0].get("id")
         except Exception as exc:
-            logger.error(
-                "GET variations?sku=%s (parent wc_id=%d) failed: %s",
-                sku, parent_wc_id, exc,
-            )
+            logger.error("%s failed: %s", label, exc)
         return None

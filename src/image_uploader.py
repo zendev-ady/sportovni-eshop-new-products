@@ -236,8 +236,15 @@ def resolve_images(groups: list[ProductGroup], translations: dict | None = None)
     os.makedirs(os.path.dirname(GCS_IMAGE_CACHE_DB), exist_ok=True)
     conn = open_image_cache(GCS_IMAGE_CACHE_DB)
 
-    client = storage.Client.from_service_account_json(GCS_SERVICE_ACCOUNT_JSON)
-    bucket = client.bucket(GCS_BUCKET_NAME)
+    try:
+        client = storage.Client.from_service_account_json(GCS_SERVICE_ACCOUNT_JSON)
+        bucket = client.bucket(GCS_BUCKET_NAME)
+    except Exception as exc:
+        logger.error(
+            "GCS initialisation failed — images will keep original supplier URLs: %s", exc
+        )
+        conn.close()
+        return
 
     total = hits = uploads = errors = 0
 

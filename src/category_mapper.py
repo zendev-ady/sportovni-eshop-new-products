@@ -222,7 +222,7 @@ def _resolve_ids(paths: list[str]) -> list[int]:
             ids.append(wc_id)
         else:
             logger.warning(
-                "[category] no WC ID configured for %r — add to WOO_CATEGORY_IDS in config.py",
+                "[category] no WC ID configured for %r — add to config/category_ids.json",
                 resolved_path,
             )
 

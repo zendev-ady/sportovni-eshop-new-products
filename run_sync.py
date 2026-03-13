@@ -17,6 +17,7 @@ import argparse
 import logging
 import os
 import sys
+import time
 from collections import Counter
 
 # Ensure Czech characters print correctly on Windows terminals.
@@ -172,7 +173,10 @@ def main() -> None:
         return
 
     # 4b. Live upsert
-    from woo_client import WooClient  # deferred — requires woocommerce package + WOO_URL
+    # Deferred: woo_client needs the woocommerce package + WOO_URL validation;
+    # image_uploader needs google-cloud-storage. Neither is needed in dry-run,
+    # so importing here keeps those dependencies optional for dry-run users.
+    from woo_client import WooClient
     from image_uploader import resolve_images
 
     logger.info("Translating product names for image filenames...")
@@ -186,12 +190,17 @@ def main() -> None:
 
     current_skus = {g.parent_sku for g in groups}
 
+    _sync_start = time.monotonic()
     with WooClient() as woo:
         for idx, group in enumerate(groups):
             translated = translations[group.parent_sku]
+            done = idx + 1
+            elapsed = time.monotonic() - _sync_start
+            eta_s = (elapsed / done) * (len(groups) - done)
             logger.info(
-                "── %d/%d  [%s]  SKU=%s",
-                idx + 1, len(groups), group.kind, group.parent_sku,
+                "── %d/%d  [%s]  SKU=%s  ETA %dm%02ds",
+                done, len(groups), group.kind, group.parent_sku,
+                int(eta_s // 60), int(eta_s % 60),
             )
             logger.info(
                 "   %r  →  %r",
