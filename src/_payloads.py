@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 # Re-export for callers that import from this module
 from product_grouper import ProductGroup, Variation
+import _seo
 if TYPE_CHECKING:
     from translator import TranslatedGroup
 
@@ -51,17 +52,26 @@ def build_parent_payload(
     """
     is_simple = group.kind == "simple"
 
+    # EAN for Product schema (global_unique_id → gtin13 in Rank Math JSON-LD)
+    first_ean = group.variations[0].ean if group.variations else ""
+
     payload: dict = {
         "sku":               group.parent_sku,
+        "slug":              _seo.build_slug(group, translated),
         "name":              translated.name_cs,
         "description":       translated.long_description_cs,
         "short_description": translated.short_description_cs,
         "type":              "simple" if is_simple else "variable",
         "status":            "publish",
         "categories":        [{"id": cid} for cid in category_ids],
-        "meta_data":         _parent_meta(group),
+        "tags":              _seo.build_tags(group, translated),
+        "brands":            [{"name": group.producer}] if group.producer else [],
+        "meta_data":         _parent_meta(group, translated),
         "attributes":        attribute_mapper.build_parent_attributes(group, translated.attrs_cs),
     }
+
+    if first_ean:
+        payload["global_unique_id"] = first_ean
 
     if is_simple:
         v = group.variations[0]
@@ -118,39 +128,69 @@ def build_variation_payload(
 # Private helpers
 # ---------------------------------------------------------------------------
 
-def _fifu_meta(images: list) -> list:
+def _fifu_meta(images: list, name_cs: str = "") -> list:
     """
     Build FIFU (Featured Image From URL) meta entries for a product.
 
     FIFU serves images directly from external URLs without downloading to WP media.
     Slot layout:
-        fifu_image_url   = main featured image (images[0])
-        fifu_image_url_0 = gallery slot 1     (images[1])
-        fifu_image_url_1 = gallery slot 2     (images[2])
-        ...up to fifu_image_url_14             (images[15])
+        fifu_image_url     = main featured image (images[0])
+        fifu_image_alt     = alt text for featured image
+        fifu_image_url_0   = gallery slot 1     (images[1])
+        fifu_image_alt_0   = alt text for gallery slot 1
+        ...up to fifu_image_url_14 / fifu_image_alt_14  (images[15])
 
     Args:
         images: Ordered list of absolute image URLs (GCS or original).
+        name_cs: Czech product name used as alt text for all images.
 
     Returns:
         List of meta dicts ready for WooCommerce meta_data field.
     """
-    meta = [{"key": "fifu_image_url", "value": images[0] if images else ""}]
+    meta = [
+        {"key": "fifu_image_url", "value": images[0] if images else ""},
+        {"key": "fifu_image_alt", "value": name_cs},
+    ]
     for i in range(15):
         url = images[i + 1] if i + 1 < len(images) else ""
         meta.append({"key": f"fifu_image_url_{i}", "value": url})
+        meta.append({"key": f"fifu_image_alt_{i}", "value": name_cs if url else ""})
     return meta
 
 
-def _parent_meta(group: ProductGroup) -> list:
-    """Build meta_data list for parent product, including FIFU image URLs."""
+def _parent_meta(group: ProductGroup, translated: TranslatedGroup) -> list:
+    """
+    Build meta_data list for parent product.
+
+    Includes:
+        _b2b_model, _b2b_producer, _b2b_created_at — internal tracking
+        fifu_image_url/alt — FIFU image URLs + alt text
+        rank_math_title — SEO title (name + store suffix if fits)
+        rank_math_description — AI-generated Czech meta description
+        rank_math_focus_keyword — gender + typ + brand
+
+    Args:
+        group:      ProductGroup from product_grouper.
+        translated: TranslatedGroup with Czech content.
+
+    Returns:
+        List of meta dicts ready for WooCommerce meta_data field.
+    """
     meta = [
         {"key": "_b2b_model",    "value": group.model},
         {"key": "_b2b_producer", "value": group.producer},
     ]
     if group.created_at:
         meta.append({"key": "_b2b_created_at", "value": group.created_at})
-    meta.extend(_fifu_meta(group.images))
+
+    # FIFU images with alt text
+    meta.extend(_fifu_meta(group.images, translated.name_cs))
+
+    # Rank Math SEO fields
+    meta.append({"key": "rank_math_title", "value": _seo.trim_seo_title(translated.name_cs)})
+    meta.append({"key": "rank_math_description", "value": translated.seo_description_cs})
+    meta.append({"key": "rank_math_focus_keyword", "value": _seo.build_focus_keyword(group, translated)})
+
     return meta
 
 

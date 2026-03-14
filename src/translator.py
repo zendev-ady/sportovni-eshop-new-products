@@ -53,6 +53,7 @@ class TranslatedGroup:
     name_cs: str
     short_description_cs: str
     long_description_cs: str
+    seo_description_cs: str
     attrs_cs: Dict[str, List[str]]
 
 
@@ -189,6 +190,22 @@ def _build_messages(text: str, trans_type: str, context: dict) -> list:
         )
         return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
+    if trans_type == "seo_description":
+        focus_keyword = context.get("focus_keyword", "")
+        system = (
+            "Jsi SEO copywriter pro český sportovní e-shop. "
+            "Píšeš meta description pro Google — přesně 1 věta, 130–155 znaků, česky. "
+            "Klíčové slovo musí být v textu doslova. Přidej měkkou výzvu k akci."
+        )
+        user = (
+            f"Napiš meta description (1 věta, 130–155 znaků) pro tento produkt:\n"
+            f"Název: {context.get('name_cs', '')}\n"
+            f"Klíčové slovo (musí být v textu): {focus_keyword}\n"
+            f"Značka: {producer} | Sport: {sport} | Pohlaví: {gender or '(neuvedeno)'}\n"
+            f"Vrať pouze text meta description, bez uvozovek."
+        )
+        return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
     raise ValueError(f"Unknown trans_type: {trans_type!r}")
 
 
@@ -223,7 +240,7 @@ def _call_ai(text: str, trans_type: str, context: dict) -> str:
             response = client.chat.completions.create(
                 model=config.TRANSLATION_MODEL,
                 messages=_build_messages(text, trans_type, context),
-                max_completion_tokens={"name": 100, "short_description": 600, "long_description": 1400}[trans_type],
+                max_completion_tokens={"name": 100, "short_description": 600, "long_description": 1400, "seo_description": 200}[trans_type],
             )
             return _strip_code_fence(response.choices[0].message.content)
         except RateLimitError:
@@ -388,6 +405,21 @@ def translate(group: ProductGroup) -> TranslatedGroup:
             {**context_base, "name_cs": name_cs, "short_cs": short_cs},
             cache_suffix,
         )
+
+        # SEO meta description — keyed on name_cs (same product → same description)
+        # Focus keyword = name_cs sliced up to and including the brand (same logic as _seo.py)
+        _brand_lower = group.producer.strip().lower()
+        _name_lower = name_cs.lower()
+        _idx = _name_lower.find(_brand_lower) if _brand_lower else -1
+        focus_keyword = (
+            name_cs[: _idx + len(_brand_lower)].strip().lower()
+            if _idx != -1 else name_cs.split()[0].lower() if name_cs else ""
+        )
+        seo_cs = _translate_text(
+            conn, name_cs, "seo_description",
+            {**context_base, "name_cs": name_cs, "focus_keyword": focus_keyword},
+            cache_suffix,
+        )
     finally:
         conn.close()
 
@@ -395,5 +427,6 @@ def translate(group: ProductGroup) -> TranslatedGroup:
         name_cs=name_cs,
         short_description_cs=short_cs,
         long_description_cs=long_cs,
+        seo_description_cs=seo_cs,
         attrs_cs=attrs_cs,
     )
