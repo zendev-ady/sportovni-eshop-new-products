@@ -77,6 +77,9 @@ function logViewer() {
     done:       false,
     exitCode:   null,
     _source:    null,
+    _reconnectMs: 1000,
+    _maxReconnectMs: 10000,
+    _reconnectTimer: null,
 
     init() {
       this.lineCount = document.querySelectorAll('.log-line').length;
@@ -85,9 +88,14 @@ function logViewer() {
     },
 
     _connect() {
+      if (this._source) {
+        this._source.close();
+        this._source = null;
+      }
       this._source = new EventSource('/sync/stream');
 
       this._source.onmessage = (e) => {
+        this._reconnectMs = 1000;
         this._appendLine(e.data);
       };
 
@@ -96,10 +104,18 @@ function logViewer() {
         this.done     = true;
         this.exitCode = parseInt(e.data);
         this._source.close();
+        this._source = null;
       });
 
       this._source.onerror = () => {
-        // If not explicitly done, try reconnecting (browser handles it)
+        if (this.done) return;
+        if (this._source) {
+          this._source.close();
+          this._source = null;
+        }
+        clearTimeout(this._reconnectTimer);
+        this._reconnectTimer = setTimeout(() => this._connect(), this._reconnectMs);
+        this._reconnectMs = Math.min(this._reconnectMs * 2, this._maxReconnectMs);
       };
     },
 

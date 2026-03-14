@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS runs (
     duration_s  REAL,
     exit_code   INTEGER NOT NULL,
     mode        TEXT NOT NULL,          -- 'live' | 'dry'
+    source      TEXT,
+    run_limit   INTEGER,
     created     INTEGER DEFAULT 0,
     updated     INTEGER DEFAULT 0,
     errors      INTEGER DEFAULT 0,
@@ -40,6 +42,8 @@ def init(db_path: str) -> None:
     """
     with _conn(db_path) as conn:
         conn.execute(_CREATE_SQL)
+        _ensure_column(conn, "runs", "source", "TEXT")
+        _ensure_column(conn, "runs", "run_limit", "INTEGER")
 
 
 def insert(
@@ -49,6 +53,8 @@ def insert(
     duration_s: Optional[float],
     exit_code: int,
     mode: str,
+    source: Optional[str] = None,
+    run_limit: Optional[int] = None,
     created: int = 0,
     updated: int = 0,
     errors: int = 0,
@@ -64,6 +70,8 @@ def insert(
         duration_s:  run duration in seconds, or None if unknown
         exit_code:   subprocess exit code (0 = success)
         mode:        'live' or 'dry'
+        source:      explicit source path/url used for this run, if any
+        run_limit:   numeric limit used for this run, if any
         created:     WC products created
         updated:     WC products updated
         errors:      WC API errors
@@ -77,10 +85,10 @@ def insert(
         cur = conn.execute(
             """INSERT INTO runs
                (started_at, finished_at, duration_s, exit_code, mode,
-                created, updated, errors, drafted, log_snippet)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                                source, run_limit, created, updated, errors, drafted, log_snippet)
+                             VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (started_at, finished_at, duration_s, exit_code, mode,
-             created, updated, errors, drafted, log_snippet),
+                         source, run_limit, created, updated, errors, drafted, log_snippet),
         )
         return cur.lastrowid
 
@@ -131,3 +139,18 @@ def _conn(db_path: str):
         conn.commit()
     finally:
         conn.close()
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
+    """Add a missing column to an existing table.
+
+    Args:
+        conn: Open SQLite connection.
+        table: Table name to inspect.
+        column: Column name that should exist.
+        decl: SQL declaration used in ALTER TABLE when missing.
+    """
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    cols = {r[1] for r in rows}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")

@@ -35,6 +35,24 @@
       color: #6b7280;
     }
 
+    .dashboard-link {
+      margin-top: 0.9rem;
+      display: inline-block;
+      font-size: 0.78rem;
+      font-weight: 700;
+      color: #93c5fd;
+      text-decoration: none;
+      border: 1px solid #1e3a8a;
+      background: #0f172a;
+      padding: 0.45rem 0.72rem;
+      border-radius: 8px;
+    }
+    .dashboard-link:hover {
+      color: #dbeafe;
+      border-color: #3b82f6;
+      background: #172554;
+    }
+
     /* ── Sections ── */
     section {
       background: #1c1f27;
@@ -220,6 +238,68 @@
     #log .l-sep     { color: #374151; }
     #log .l-dry     { color: #818cf8; }
     #log .l-divider { color: #1f2937; }
+
+    /* ── Ops panel ── */
+    .ops-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 0.6rem;
+    }
+    @media (max-width: 860px) {
+      .ops-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    .ops-stat {
+      background: #13151b;
+      border: 1px solid #2a2d38;
+      border-radius: 8px;
+      padding: 0.7rem 0.75rem;
+    }
+    .ops-label {
+      font-size: 0.66rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #6b7280;
+      margin-bottom: 0.2rem;
+    }
+    .ops-value {
+      font-weight: 700;
+      color: #e5e7eb;
+      font-size: 0.95rem;
+    }
+    .ops-row {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      margin-top: 0.85rem;
+    }
+    .ops-btn {
+      border: 1px solid #2a2d38;
+      background: #111318;
+      color: #d1d5db;
+      border-radius: 8px;
+      font-size: 0.76rem;
+      padding: 0.46rem 0.62rem;
+      cursor: pointer;
+      font-weight: 700;
+      text-decoration: none;
+    }
+    .ops-btn:hover { border-color: #4b5563; color: #f3f4f6; }
+    .ops-btn.strong { background: #172554; border-color: #1d4ed8; color: #dbeafe; }
+    .ops-btn.warn { background: #3f1d1d; border-color: #7f1d1d; color: #fecaca; }
+    .cache-pills {
+      display: flex;
+      gap: 0.5rem;
+      margin-top: 0.65rem;
+      flex-wrap: wrap;
+    }
+    .cache-pill {
+      background: #13151b;
+      border: 1px solid #2a2d38;
+      border-radius: 999px;
+      font-size: 0.72rem;
+      color: #9ca3af;
+      padding: 0.3rem 0.56rem;
+    }
   </style>
 </head>
 <body>
@@ -228,7 +308,45 @@
   <header>
     <h1>B2B → WooCommerce</h1>
     <p>Vlož URL produktů z b2bsportswholesale.net — jeden na řádek. Řádky začínající # jsou ignorovány.</p>
+    <a class="dashboard-link" href="{{ dashboard_url }}">Otevřít nový Operations Dashboard</a>
   </header>
+
+  <!-- Unified operations panel -->
+  <section>
+    <div class="section-label">Operations panel (full sync + cache)</div>
+    <div class="ops-grid">
+      <div class="ops-stat">
+        <div class="ops-label">Stav</div>
+        <div class="ops-value" id="ops-state">Načítám…</div>
+      </div>
+      <div class="ops-stat">
+        <div class="ops-label">Vytvořeno</div>
+        <div class="ops-value" id="ops-created">0</div>
+      </div>
+      <div class="ops-stat">
+        <div class="ops-label">Aktualizováno</div>
+        <div class="ops-value" id="ops-updated">0</div>
+      </div>
+      <div class="ops-stat">
+        <div class="ops-label">Chyby</div>
+        <div class="ops-value" id="ops-errors">0</div>
+      </div>
+    </div>
+
+    <div class="cache-pills" id="ops-caches"></div>
+
+    <div class="ops-row">
+      <button id="ops-run-live" class="ops-btn strong" type="button">Spustit full LIVE</button>
+      <button id="ops-run-dry" class="ops-btn" type="button">Spustit full DRY (20)</button>
+      <button id="ops-stop" class="ops-btn warn" type="button">Stop full sync</button>
+      <button id="ops-clear-trans" class="ops-btn" type="button">Clear translation cache</button>
+      <button id="ops-clear-img" class="ops-btn" type="button">Clear image cache</button>
+      <button id="ops-clear-sku" class="ops-btn" type="button">Clear SKU cache</button>
+      <a class="ops-btn" href="/dashboard/logs" target="_blank">Logy</a>
+      <a class="ops-btn" href="/dashboard/history" target="_blank">Historie</a>
+      <a class="ops-btn" href="/dashboard/cache" target="_blank">Cache manager</a>
+    </div>
+  </section>
 
   <!-- URL input -->
   <section>
@@ -302,10 +420,27 @@
   const statusTxt  = document.getElementById("status-text");
   const btnClear   = document.getElementById("btn-clear");
   const modeRadios = document.querySelectorAll("input[name=mode]");
+  const opsState   = document.getElementById("ops-state");
+  const opsCreated = document.getElementById("ops-created");
+  const opsUpdated = document.getElementById("ops-updated");
+  const opsErrors  = document.getElementById("ops-errors");
+  const opsCaches  = document.getElementById("ops-caches");
 
   const LABELS = { dry: "🔍 Spustit náhled", live: "⚡ Synchronizovat" };
 
   let running = false;
+
+  function humanSize(n) {
+    if (!Number.isFinite(n)) return "0 B";
+    const units = ["B", "KB", "MB", "GB"];
+    let v = n;
+    let i = 0;
+    while (v >= 1024 && i < units.length - 1) {
+      v /= 1024;
+      i++;
+    }
+    return i === 0 ? `${Math.round(v)} ${units[i]}` : `${v.toFixed(1)} ${units[i]}`;
+  }
 
   function currentMode() {
     return [...modeRadios].find(r => r.checked)?.value ?? "dry";
@@ -327,6 +462,103 @@
     btnRun.textContent = LABELS[m];
     btnRun.className   = running ? "running" : `mode-${m}`;
   }
+
+  async function loadOpsOverview() {
+    try {
+      const res = await fetch("/ops/overview");
+      if (!res.ok) return;
+      const data = await res.json();
+      const s = data.status || {};
+
+      opsState.textContent = s.running ? `Běží (${s.mode || "live"})` : "Idle";
+      opsState.style.color = s.running ? "#fbbf24" : "#4ade80";
+      opsCreated.textContent = s.created ?? 0;
+      opsUpdated.textContent = s.updated ?? 0;
+      opsErrors.textContent = s.errors ?? 0;
+      opsErrors.style.color = (s.errors ?? 0) > 0 ? "#f87171" : "#e5e7eb";
+
+      const caches = data.caches || [];
+      opsCaches.innerHTML = "";
+      caches.forEach(c => {
+        const pill = document.createElement("div");
+        pill.className = "cache-pill";
+        pill.textContent = `${c.label}: ${c.rows} zázn. • ${humanSize(c.size_bytes || 0)}`;
+        opsCaches.appendChild(pill);
+      });
+    } catch (_) {
+      // silent refresh fail
+    }
+  }
+
+  async function callOps(path, body = null) {
+    const opts = { method: "POST" };
+    if (body) opts.body = body;
+    const r = await fetch(path, opts);
+    const payload = await r.json().catch(() => ({ ok: false, message: "Neplatná odpověď serveru." }));
+    if (!r.ok || !payload.ok) throw new Error(payload.message || "Akce selhala.");
+    return payload;
+  }
+
+  document.getElementById("ops-run-live").addEventListener("click", async () => {
+    try {
+      const body = new URLSearchParams();
+      const source = document.querySelector("input[name=source]:checked")?.value ?? "remote";
+      const limit = document.getElementById("cfg-limit").value.trim();
+      if (source === "local") body.append("source", "partner_b2b_full.xml");
+      if (limit) body.append("limit", limit);
+      const result = await callOps("/ops/run/live", body);
+      appendLine(`✅ ${result.message}`);
+      loadOpsOverview();
+    } catch (e) {
+      appendLine(`❌ Full LIVE: ${e.message}`);
+    }
+  });
+
+  document.getElementById("ops-run-dry").addEventListener("click", async () => {
+    try {
+      const body = new URLSearchParams();
+      const source = document.querySelector("input[name=source]:checked")?.value ?? "remote";
+      const limit = document.getElementById("cfg-limit").value.trim() || "20";
+      if (source === "local") body.append("source", "partner_b2b_full.xml");
+      body.append("limit", limit);
+      const result = await callOps("/ops/run/dry", body);
+      appendLine(`✅ ${result.message}`);
+      loadOpsOverview();
+    } catch (e) {
+      appendLine(`❌ Full DRY: ${e.message}`);
+    }
+  });
+
+  document.getElementById("ops-stop").addEventListener("click", async () => {
+    try {
+      const result = await callOps("/ops/stop");
+      appendLine(`⏹ ${result.message}`);
+      setTimeout(loadOpsOverview, 800);
+    } catch (e) {
+      appendLine(`❌ Stop full sync: ${e.message}`);
+    }
+  });
+
+  function attachClearButton(id, cacheName, label) {
+    const el = document.getElementById(id);
+    el.addEventListener("click", async () => {
+      if (!confirm(`Opravdu vymazat ${label}?`)) return;
+      try {
+        const result = await callOps(`/ops/cache/${cacheName}/clear`);
+        appendLine(`✅ Cache ${cacheName} vymazána (${result.deleted} záznamů).`);
+        loadOpsOverview();
+      } catch (e) {
+        appendLine(`❌ Clear ${cacheName}: ${e.message}`);
+      }
+    });
+  }
+
+  attachClearButton("ops-clear-trans", "translations", "translation cache");
+  attachClearButton("ops-clear-img", "images", "image cache");
+  attachClearButton("ops-clear-sku", "sku", "SKU cache");
+
+  loadOpsOverview();
+  setInterval(loadOpsOverview, 3000);
 
   modeRadios.forEach(r => r.addEventListener("change", updateModeUI));
   updateModeUI();

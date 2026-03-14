@@ -13,6 +13,7 @@ run is how woo_client detects products that disappeared from the feed.
 """
 
 import sqlite3
+from datetime import datetime, timezone
 
 
 def open_cache(path: str) -> sqlite3.Connection:
@@ -34,9 +35,19 @@ def open_cache(path: str) -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS sku_cache (
             sku        TEXT PRIMARY KEY,
             wc_id      INTEGER NOT NULL,
-            parent_sku TEXT NOT NULL DEFAULT ''
+            parent_sku TEXT NOT NULL DEFAULT '',
+            created_at TEXT,
+            updated_at TEXT
         )
     """)
+
+    # Backward-compatible migration for already existing cache files.
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(sku_cache)").fetchall()}
+    if "created_at" not in cols:
+        conn.execute("ALTER TABLE sku_cache ADD COLUMN created_at TEXT")
+    if "updated_at" not in cols:
+        conn.execute("ALTER TABLE sku_cache ADD COLUMN updated_at TEXT")
+
     conn.commit()
     return conn
 
@@ -73,9 +84,20 @@ def set_id(
         wc_id:      WooCommerce product/variation ID.
         parent_sku: mpn of the parent group; empty string for parent products.
     """
+    now = datetime.now(timezone.utc).isoformat()
+
+    row = conn.execute(
+        "SELECT created_at FROM sku_cache WHERE sku = ?",
+        (sku,),
+    ).fetchone()
+    created_at = row[0] if row and row[0] else now
+
     conn.execute(
-        "INSERT OR REPLACE INTO sku_cache (sku, wc_id, parent_sku) VALUES (?, ?, ?)",
-        (sku, wc_id, parent_sku),
+        """
+        INSERT OR REPLACE INTO sku_cache (sku, wc_id, parent_sku, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (sku, wc_id, parent_sku, created_at, now),
     )
     # Caller batches commits for performance — no commit here.
 

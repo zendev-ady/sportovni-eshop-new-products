@@ -37,6 +37,8 @@ class RunState:
     """Mutable state of the currently running (or last) sync job."""
     _proc: Optional[subprocess.Popen] = None
     mode: str = "idle"                   # 'idle' | 'live' | 'dry'
+    source: Optional[str] = None          # ''/None means default remote URL
+    limit: Optional[int] = None           # None means all groups
     started_at: Optional[str] = None     # ISO timestamp (UTC)
     log_buffer: List[str] = field(default_factory=list)
     created: int = 0
@@ -85,6 +87,8 @@ async def start(
         cmd += ["--source", source.strip()]
 
     state.mode = mode
+    state.source = source.strip() if source and source.strip() else None
+    state.limit = int(limit) if limit else None
     state.started_at = datetime.now(timezone.utc).isoformat()
     state.log_buffer.clear()
     state.created = state.updated = state.errors = state.drafted = 0
@@ -121,7 +125,7 @@ async def stream() -> AsyncGenerator[str, None]:
 
     On connect: replays the full log buffer (handles reconnects).
     Then streams live lines until the subprocess exits.
-    Sends SSE keepalive comments every 15 s to prevent proxy timeouts.
+    Sends SSE keepalive comments every 10 s to prevent proxy timeouts.
     """
     q: asyncio.Queue = asyncio.Queue()
     _subscribers.append(q)
@@ -139,7 +143,7 @@ async def stream() -> AsyncGenerator[str, None]:
     try:
         while True:
             try:
-                event, data = await asyncio.wait_for(q.get(), timeout=15.0)
+                event, data = await asyncio.wait_for(q.get(), timeout=10.0)
             except asyncio.TimeoutError:
                 yield ": keepalive\n\n"
                 continue
@@ -157,6 +161,8 @@ def get_status() -> dict:
     return {
         "running":    is_running(),
         "mode":       state.mode,
+        "source":     state.source,
+        "limit":      state.limit,
         "started_at": state.started_at,
         "created":    state.created,
         "updated":    state.updated,

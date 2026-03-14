@@ -218,7 +218,7 @@
 function dashboardApp() {
   return {
     running:    {{ 'true' if status.running else 'false' }},
-    mode:       '{{ status.mode }}',
+    mode:       {{ status.mode }},
     created:    {{ status.created }},
     updated:    {{ status.updated }},
     errors:     {{ status.errors }},
@@ -230,9 +230,42 @@ function dashboardApp() {
     drySource:      'partner_b2b_full.xml',
     dryLimit:       20,
     _timer: null,
+    _prefsKey: 'b2b-sync-dashboard-prefs-v1',
 
     init() {
+      this._loadPrefs();
+      this._watchPrefs();
       if (this.running) this._startPolling();
+    },
+
+    _loadPrefs() {
+      try {
+        const raw = localStorage.getItem(this._prefsKey);
+        if (!raw) return;
+        const p = JSON.parse(raw);
+        if (['remote', 'local'].includes(p.liveSourceType)) this.liveSourceType = p.liveSourceType;
+        if (['remote', 'local'].includes(p.drySourceType)) this.drySourceType = p.drySourceType;
+        if (typeof p.liveLimit === 'string') this.liveLimit = p.liveLimit;
+        if (typeof p.dryLimit === 'number' && p.dryLimit > 0) this.dryLimit = p.dryLimit;
+      } catch (e) {
+        // ignore invalid localStorage payload
+      }
+    },
+
+    _watchPrefs() {
+      const persist = () => {
+        const payload = {
+          liveSourceType: this.liveSourceType,
+          drySourceType: this.drySourceType,
+          liveLimit: this.liveLimit,
+          dryLimit: Number(this.dryLimit) || 20,
+        };
+        localStorage.setItem(this._prefsKey, JSON.stringify(payload));
+      };
+      this.$watch('liveSourceType', persist);
+      this.$watch('drySourceType', persist);
+      this.$watch('liveLimit', persist);
+      this.$watch('dryLimit', persist);
     },
 
     _startPolling() {

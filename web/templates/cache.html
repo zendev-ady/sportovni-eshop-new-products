@@ -13,17 +13,36 @@
     ({{ request.query_params.get('rows') }} záznamů odstraněno).
   </div>
   {% endif %}
+  {% if request.query_params.get('ttl') %}
+  <div class="bg-emerald-50 border border-emerald-200 text-emerald-700 text-sm px-4 py-3 rounded-lg">
+    ✅ TTL invalidace pro <strong>{{ request.query_params.get('ttl') }}</strong> dokončena
+    ({{ request.query_params.get('rows') }} záznamů, starších než {{ request.query_params.get('days') }} dní).
+  </div>
+  {% endif %}
+  {% if request.query_params.get('prefix') %}
+  <div class="bg-emerald-50 border border-emerald-200 text-emerald-700 text-sm px-4 py-3 rounded-lg">
+    ✅ Prefix invalidace pro <strong>{{ request.query_params.get('prefix') }}</strong> dokončena
+    ({{ request.query_params.get('rows') }} záznamů, prefix "{{ request.query_params.get('q') }}").
+  </div>
+  {% endif %}
   {% if request.query_params.get('err') %}
   <div class="bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3 rounded-lg">
-    ❌ Chyba: neznámá cache.
+    ❌ Chyba cache operace.
+    {% if request.query_params.get('err') == 'unknown' %}
+      Neznámá cache.
+    {% elif request.query_params.get('err') == 'invalid_ttl' %}
+      TTL musí být kladné celé číslo.
+    {% elif request.query_params.get('msg') %}
+      {{ request.query_params.get('msg') }}
+    {% endif %}
   </div>
   {% endif %}
 
   <!-- Cache cards -->
   <div class="grid gap-5 sm:grid-cols-1 lg:grid-cols-3">
     {% for cache in caches %}
-    <div class="bg-white rounded-xl border border-slate-100 shadow-sm p-5 space-y-4"
-         x-data="{ confirm: false }">
+        <div class="bg-white rounded-xl border border-slate-100 shadow-sm p-5 space-y-4"
+          x-data="{ confirm: false, mode: 'clear' }">
 
       <div class="flex items-start justify-between">
         <div>
@@ -54,9 +73,72 @@
         </div>
       </div>
 
+      {% if previews.get(cache.name) and previews[cache.name].get('clear') %}
+      <div class="text-xs bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-1 text-slate-600">
+        <div class="font-medium text-slate-700">Odhad dopadu full clear</div>
+        <div>Dotčené řádky: <strong>{{ previews[cache.name]['clear']['rows_affected'] }}</strong></div>
+        {% if cache.name == 'translations' %}
+        <div>Odhad AI callů: <strong>{{ previews[cache.name]['clear']['estimated_ai_calls'] }}</strong></div>
+        <div>Odhad nákladů: <strong>~{{ previews[cache.name]['clear']['estimated_cost_czk'] }} Kč</strong></div>
+        {% endif %}
+      </div>
+      {% endif %}
+
+      {% if cache.oldest_ts or cache.newest_ts %}
+      <div class="text-xs bg-blue-50 border border-blue-200 rounded-lg p-3 text-blue-700 space-y-1">
+        <div><strong>Nejstarší:</strong> {{ cache.oldest_ts or '—' }}</div>
+        <div><strong>Nejnovější:</strong> {{ cache.newest_ts or '—' }}</div>
+      </div>
+      {% endif %}
+
+      {% if cache.exists and cache.rows > 0 %}
+      <div class="border-t border-slate-100 pt-4 space-y-3">
+        <div class="flex items-center gap-1 text-xs">
+          <button type="button" @click="mode = 'clear'"
+                  :class="mode === 'clear' ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'"
+                  class="px-2.5 py-1 rounded-md transition-colors">Full clear</button>
+          <button type="button" @click="mode = 'ttl'"
+                  :class="mode === 'ttl' ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'"
+                  class="px-2.5 py-1 rounded-md transition-colors">TTL</button>
+          <button type="button" @click="mode = 'prefix'"
+                  :class="mode === 'prefix' ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'"
+                  class="px-2.5 py-1 rounded-md transition-colors">Prefix</button>
+        </div>
+
+        <div x-show="mode === 'ttl'" x-cloak>
+          <form method="post" action="/cache/{{ cache.name }}/invalidate/ttl" class="space-y-2">
+            <label class="text-xs text-slate-600 block">Smazat záznamy starší než (dní)</label>
+            <div class="flex gap-2">
+              <input name="days" type="number" min="1" placeholder="30"
+                     class="flex-1 text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
+              <button type="submit" class="text-sm bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-lg transition-colors">
+                Aplikovat TTL
+              </button>
+            </div>
+          </form>
+          {% if not cache.ttl_supported %}
+          <p class="text-[11px] text-amber-700 mt-2">⚠ Tato cache zatím nemá timestamp sloupec, TTL nebude fungovat.</p>
+          {% endif %}
+        </div>
+
+        <div x-show="mode === 'prefix'" x-cloak>
+          <form method="post" action="/cache/{{ cache.name }}/invalidate/prefix" class="space-y-2">
+            <label class="text-xs text-slate-600 block">Prefix filtru (SKU/hash/URL)</label>
+            <div class="flex gap-2">
+              <input name="prefix" type="text" placeholder="např. NIKE- nebo https://..."
+                     class="flex-1 text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              <button type="submit" class="text-sm bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-2 rounded-lg transition-colors">
+                Smazat prefix
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+      {% endif %}
+
       <!-- Clear button with confirmation -->
       {% if cache.exists and cache.rows > 0 %}
-      <div>
+      <div x-show="mode === 'clear'">
         <button @click="confirm = true"
                 x-show="!confirm"
                 class="w-full text-sm text-red-600 hover:text-red-800 border border-red-200 hover:border-red-400 hover:bg-red-50 py-2 rounded-lg transition-colors">
@@ -86,6 +168,43 @@
 
     </div>
     {% endfor %}
+  </div>
+
+  <div class="bg-white rounded-xl border border-slate-100 shadow-sm overflow-hidden">
+    <div class="px-5 py-3 border-b border-slate-100 flex items-center justify-between">
+      <h2 class="font-semibold text-slate-800 text-sm">Audit cache operací</h2>
+      <span class="text-xs text-slate-500">posledních {{ audit_rows | length }}</span>
+    </div>
+    {% if audit_rows %}
+    <div class="overflow-x-auto">
+      <table class="w-full text-xs">
+        <thead class="bg-slate-50 border-b border-slate-200">
+          <tr>
+            <th class="text-left px-4 py-2 text-slate-500">Čas</th>
+            <th class="text-left px-4 py-2 text-slate-500">Cache</th>
+            <th class="text-left px-4 py-2 text-slate-500">Akce</th>
+            <th class="text-right px-4 py-2 text-slate-500">Rows</th>
+            <th class="text-left px-4 py-2 text-slate-500">Operátor</th>
+            <th class="text-left px-4 py-2 text-slate-500">Detail</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100">
+          {% for row in audit_rows %}
+          <tr>
+            <td class="px-4 py-2 font-mono text-slate-600">{{ row.ts }}</td>
+            <td class="px-4 py-2 text-slate-700">{{ row.cache_name }}</td>
+            <td class="px-4 py-2 text-slate-700">{{ row.action }}</td>
+            <td class="px-4 py-2 text-right font-semibold text-slate-700">{{ row.rows_deleted }}</td>
+            <td class="px-4 py-2 text-slate-500">{{ row.operator }}</td>
+            <td class="px-4 py-2 text-slate-500 truncate max-w-[280px]" title="{{ row.details }}">{{ row.details }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="px-5 py-6 text-xs text-slate-400">Zatím nebyly zaznamenány žádné mutační operace cache.</div>
+    {% endif %}
   </div>
 
   <!-- Info box -->

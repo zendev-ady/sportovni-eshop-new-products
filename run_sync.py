@@ -36,7 +36,7 @@ import product_grouper
 import translator
 import category_mapper
 from price_calculator import calculate_price, get_eur_czk_rate
-from config.config import XML_SOURCE_URL, LOG_DIR
+from config.config import XML_SOURCE_URL, LOG_DIR, SKIP_TRANSLATION
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +140,12 @@ def _dry_run_summary(groups: list, limit: int | None) -> None:
 def main() -> None:
     args = _parse_args()
     _setup_logging()
+
+    if not args.dry_run and SKIP_TRANSLATION:
+        raise RuntimeError(
+            "Nebezpecna konfigurace: SKIP_TRANSLATION=True a live sync by prepsal ceske texty anglickymi. "
+            "Pro live sync nastav SKIP_TRANSLATION=False."
+        )
 
     source = args.source or XML_SOURCE_URL
     logger.info(

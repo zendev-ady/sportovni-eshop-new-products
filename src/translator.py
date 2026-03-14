@@ -18,6 +18,7 @@ import sqlite3
 import sys
 import os
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
@@ -67,8 +68,16 @@ def _init_db(path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.execute(
         "CREATE TABLE IF NOT EXISTS translations "
-        "(hash TEXT, type TEXT, result TEXT, PRIMARY KEY (hash, type))"
+        "(hash TEXT, type TEXT, result TEXT, created_at TEXT, updated_at TEXT, PRIMARY KEY (hash, type))"
     )
+
+    # Backward-compatible migration for existing DB files.
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(translations)").fetchall()}
+    if "created_at" not in cols:
+        conn.execute("ALTER TABLE translations ADD COLUMN created_at TEXT")
+    if "updated_at" not in cols:
+        conn.execute("ALTER TABLE translations ADD COLUMN updated_at TEXT")
+
     conn.commit()
     return conn
 
@@ -82,9 +91,19 @@ def _cache_get(conn: sqlite3.Connection, text_hash: str, trans_type: str) -> Opt
 
 
 def _cache_set(conn: sqlite3.Connection, text_hash: str, trans_type: str, result: str) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    row = conn.execute(
+        "SELECT created_at FROM translations WHERE hash = ? AND type = ?",
+        (text_hash, trans_type),
+    ).fetchone()
+    created_at = row[0] if row and row[0] else now
+
     conn.execute(
-        "INSERT OR REPLACE INTO translations (hash, type, result) VALUES (?, ?, ?)",
-        (text_hash, trans_type, result),
+        """
+        INSERT OR REPLACE INTO translations (hash, type, result, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (text_hash, trans_type, result, created_at, now),
     )
     conn.commit()
 
@@ -379,10 +398,10 @@ def translate(group: ProductGroup) -> TranslatedGroup:
     attrs_cs = _map_attrs(group.attrs)
 
     # Compute cache-key suffix from context that influences the prompt.
-    # v2: "Unisex" excluded from name, English words banned — bump forces regeneration.
+    # Cache version is config-driven so prompt strategy changes can be rolled out safely.
     effective_gender = _effective_gender(attrs_cs.get("pohlavi", []))
     colours_key = ",".join(sorted(attrs_cs.get("barva", [])))
-    cache_suffix = f"|v2|{effective_gender}|{colours_key}"
+    cache_suffix = f"|{config.TRANSLATION_CACHE_VERSION}|{effective_gender}|{colours_key}"
 
     conn = _init_db(config.TRANSLATION_DB)
     try:
