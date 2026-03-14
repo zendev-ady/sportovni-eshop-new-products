@@ -1,0 +1,249 @@
+{% extends "base.html" %}
+{% block title %}Synchronizace{% endblock %}
+
+{% block content %}
+<div class="p-6 max-w-3xl mx-auto space-y-5"
+     x-data="selectSync()"
+     x-init="init()">
+
+  <!-- Header -->
+  <div class="flex items-center justify-between">
+    <div>
+      <h1 class="text-xl font-bold text-slate-900">Selektivní sync</h1>
+      <p class="text-sm text-slate-500 mt-0.5">Vlož URL z b2bsportswholesale.net — jeden na řádek. Řádky začínající # jsou ignorovány.</p>
+    </div>
+    <span x-show="running" x-cloak
+          class="flex items-center gap-2 bg-blue-50 border border-blue-200 text-blue-700 text-sm px-3 py-1.5 rounded-full">
+      <span class="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></span>
+      Probíhá…
+    </span>
+  </div>
+
+  <!-- URL textarea -->
+  <div class="bg-white rounded-xl border border-slate-100 shadow-sm p-5">
+    <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">URL produktů</label>
+    <textarea x-ref="urls" rows="8" spellcheck="false"
+              :disabled="running"
+              class="w-full bg-slate-950 text-slate-300 font-mono text-xs rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y disabled:opacity-60"
+              placeholder="https://b2bsportswholesale.net/adidas-copa-mundial-fg-015110-football-boots-1359&#10;https://b2bsportswholesale.net/nike-mercurial-fg-..."></textarea>
+  </div>
+
+  <!-- Config + actions -->
+  <div class="bg-white rounded-xl border border-slate-100 shadow-sm p-5">
+    <div class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-4">Konfigurace</div>
+
+    <div class="flex flex-wrap gap-5 items-end">
+
+      <!-- Mode -->
+      <div>
+        <div class="text-xs font-medium text-slate-600 mb-1.5">Režim</div>
+        <div class="flex rounded-lg border border-slate-200 overflow-hidden text-xs font-medium">
+          <button type="button" @click="mode = 'dry'"
+                  :class="mode === 'dry' ? 'bg-indigo-600 text-white' : 'bg-white text-slate-500 hover:bg-slate-50'"
+                  class="px-3 py-1.5 transition-colors">Náhled</button>
+          <button type="button" @click="mode = 'live'"
+                  :class="mode === 'live' ? 'bg-emerald-600 text-white' : 'bg-white text-slate-500 hover:bg-slate-50'"
+                  class="px-3 py-1.5 transition-colors border-l border-slate-200">Živý sync</button>
+        </div>
+      </div>
+
+      <!-- Source -->
+      <div>
+        <div class="text-xs font-medium text-slate-600 mb-1.5">XML zdroj</div>
+        <div class="flex rounded-lg border border-slate-200 overflow-hidden text-xs font-medium">
+          <button type="button" @click="source = 'remote'"
+                  :class="source === 'remote' ? 'bg-slate-800 text-white' : 'bg-white text-slate-500 hover:bg-slate-50'"
+                  class="px-3 py-1.5 transition-colors">🌐 Remote</button>
+          <button type="button" @click="source = 'local'"
+                  :class="source === 'local' ? 'bg-slate-800 text-white' : 'bg-white text-slate-500 hover:bg-slate-50'"
+                  class="px-3 py-1.5 transition-colors border-l border-slate-200">📁 Lokální</button>
+        </div>
+      </div>
+
+      <!-- Rate limit -->
+      <div>
+        <div class="text-xs font-medium text-slate-600 mb-1.5">429 Rate limit</div>
+        <div class="flex rounded-lg border border-slate-200 overflow-hidden text-xs font-medium">
+          <button type="button" @click="rateLimit = 'wait'"
+                  :class="rateLimit === 'wait' ? 'bg-slate-800 text-white' : 'bg-white text-slate-500 hover:bg-slate-50'"
+                  class="px-3 py-1.5 transition-colors">Čekat</button>
+          <button type="button" @click="rateLimit = 'skip'"
+                  :class="rateLimit === 'skip' ? 'bg-amber-500 text-white' : 'bg-white text-slate-500 hover:bg-slate-50'"
+                  class="px-3 py-1.5 transition-colors border-l border-slate-200">Přeskočit</button>
+        </div>
+      </div>
+
+      <!-- Limit -->
+      <div>
+        <div class="text-xs font-medium text-slate-600 mb-1.5">Limit skupin</div>
+        <input type="number" x-model="limit" min="1" placeholder="vše"
+               class="w-24 text-sm border border-slate-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500">
+      </div>
+
+    </div>
+
+    <!-- Buttons -->
+    <div class="flex items-center gap-3 mt-5">
+      <button type="button"
+              @click="run()"
+              :disabled="running"
+              :class="mode === 'live' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-indigo-600 hover:bg-indigo-700'"
+              class="inline-flex items-center gap-2 px-4 py-2 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              x-text="running ? '⏳ Probíhá…' : (mode === 'live' ? '⚡ Synchronizovat' : '🔍 Spustit náhled')">
+      </button>
+      <button type="button"
+              @click="stop()"
+              x-show="running" x-cloak
+              class="btn-danger">
+        ⏹ Zastavit
+      </button>
+      <button type="button"
+              @click="clearLog()"
+              x-show="!running && logLines > 0"
+              class="btn-secondary ml-auto text-sm">
+        Vymazat log
+      </button>
+    </div>
+  </div>
+
+  <!-- Log output -->
+  <div x-show="logLines > 0 || running" x-cloak
+       class="bg-slate-950 rounded-xl overflow-hidden">
+    <div class="flex items-center justify-between px-4 py-2 border-b border-slate-800">
+      <span class="text-xs text-slate-500 font-mono" x-text="logLines + ' řádků'">0 řádků</span>
+      <span x-show="done" x-cloak
+            :class="success ? 'text-emerald-400' : 'text-red-400'"
+            class="text-xs font-medium"
+            x-text="success ? '✅ Hotovo' : '❌ Chyba'">
+      </span>
+    </div>
+    <div id="log-output" class="p-4 h-80 overflow-y-auto">
+      <pre id="log-pre" class="text-xs font-mono leading-5 whitespace-pre-wrap"></pre>
+    </div>
+  </div>
+
+</div>
+
+<script>
+function selectSync() {
+  return {
+    running:   false,
+    mode:      'dry',
+    source:    'remote',
+    rateLimit: 'wait',
+    limit:     '',
+    logLines:  0,
+    done:      false,
+    success:   false,
+    _prefsKey: 'b2b-select-sync-prefs-v1',
+
+    init() {
+      this._loadPrefs();
+      this.$watch('mode',      () => this._savePrefs());
+      this.$watch('source',    () => this._savePrefs());
+      this.$watch('rateLimit', () => this._savePrefs());
+    },
+
+    _loadPrefs() {
+      try {
+        const p = JSON.parse(localStorage.getItem(this._prefsKey) || '{}');
+        if (['dry', 'live'].includes(p.mode))        this.mode      = p.mode;
+        if (['remote', 'local'].includes(p.source))  this.source    = p.source;
+        if (['wait', 'skip'].includes(p.rateLimit))  this.rateLimit = p.rateLimit;
+      } catch (_) {}
+    },
+
+    _savePrefs() {
+      try {
+        localStorage.setItem(this._prefsKey, JSON.stringify({
+          mode: this.mode, source: this.source, rateLimit: this.rateLimit,
+        }));
+      } catch (_) {}
+    },
+
+    _appendLine(text) {
+      if (!text.trim()) return;
+      const pre  = document.getElementById('log-pre');
+      const span = document.createElement('span');
+      const t    = text.toLowerCase();
+      if      (t.includes('error') || t.includes('critical') || text.includes('❌')) span.className = 'text-red-400';
+      else if (t.includes('warning') || text.includes('⚠'))                          span.className = 'text-yellow-400';
+      else if (text.startsWith('✅') || t.includes('hotovo') || t.includes('dokončen')) span.className = 'text-emerald-400';
+      else                                                                             span.className = 'text-slate-300';
+      span.textContent = text + '\n';
+      pre.appendChild(span);
+      this.logLines++;
+      const out = document.getElementById('log-output');
+      out.scrollTop = out.scrollHeight;
+    },
+
+    clearLog() {
+      document.getElementById('log-pre').innerHTML = '';
+      this.logLines = 0;
+      this.done     = false;
+    },
+
+    async stop() {
+      try {
+        await fetch('/select-sync/stop', { method: 'POST' });
+      } catch (e) {
+        this._appendLine('❌ Chyba při zastavení: ' + e);
+      }
+    },
+
+    async run() {
+      const urls = this.$refs.urls.value.trim();
+      if (!urls) { this._appendLine('⚠️ Žádné URL nebyly zadány.'); return; }
+
+      this.running = true;
+      this.done    = false;
+      this.success = false;
+
+      // Separator
+      const pre = document.getElementById('log-pre');
+      const sep = document.createElement('span');
+      sep.className   = 'text-slate-600';
+      sep.textContent = `── ${this.mode === 'dry' ? 'NÁHLED' : 'SYNC'} · ${new Date().toLocaleTimeString('cs-CZ')} ─────────────────────\n`;
+      pre.appendChild(sep);
+      this.logLines++;
+
+      const body = new URLSearchParams();
+      body.append('urls_text', urls);
+      body.append('dry_run', this.mode === 'dry' ? 'on' : 'off');
+      if (this.limit)              body.append('limit', this.limit);
+      if (this.source === 'local') body.append('source', 'local');
+      if (this.rateLimit === 'skip') body.append('skip_on_rate_limit', 'on');
+
+      try {
+        const res    = await fetch('/select-sync/run', { method: 'POST', body });
+        const reader = res.body.getReader();
+        const dec    = new TextDecoder();
+        let   buf    = '';
+
+        outer: while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          const parts = buf.split('\n\n');
+          buf = parts.pop();
+          for (const part of parts) {
+            const line = part.trim();
+            if (!line.startsWith('data:')) continue;
+            const msg = line.slice(5).trim();
+            if (msg === '__DONE__') break outer;
+            this._appendLine(msg.replace(/↵/g, ' '));
+          }
+        }
+        this.success = true;
+      } catch (err) {
+        this._appendLine('❌ Stream: ' + err);
+        this.success = false;
+      } finally {
+        this.running = false;
+        this.done    = true;
+      }
+    },
+  }
+}
+</script>
+{% endblock %}
