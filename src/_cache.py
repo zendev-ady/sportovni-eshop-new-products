@@ -80,6 +80,21 @@ def set_id(
     # Caller batches commits for performance — no commit here.
 
 
+def evict_id(conn: sqlite3.Connection, sku: str) -> None:
+    """
+    Remove *sku* from the cache.
+
+    Called when WooCommerce rejects a stored ID as invalid (stale cache),
+    so that the next batch send treats the product as a fresh create.
+
+    Args:
+        conn: Open cache connection.
+        sku:  SKU string to evict (product or variation).
+    """
+    conn.execute("DELETE FROM sku_cache WHERE sku = ?", (sku,))
+    # Caller is responsible for committing.
+
+
 def get_all_parent_skus(conn: sqlite3.Connection) -> set:
     """
     Return the set of all parent SKUs (parent_sku == '') ever synced.

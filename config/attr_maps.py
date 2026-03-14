@@ -60,9 +60,10 @@ COLOUR: dict[str, str] = {
 }
 
 GENDER: dict[str, str] = {
-    "Kids":  "Dětské",
-    "Women": "Dámské",
-    "Men":   "Pánské",
+    "Kids":   "Dětské",
+    "Women":  "Dámské",
+    "Men":    "Pánské",
+    "Unisex": "Unisex",
 }
 
 SPORT: dict[str, str] = {

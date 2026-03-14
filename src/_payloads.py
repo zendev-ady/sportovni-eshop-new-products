@@ -59,7 +59,6 @@ def build_parent_payload(
         "type":              "simple" if is_simple else "variable",
         "status":            "publish",
         "categories":        [{"id": cid} for cid in category_ids],
-        "images":            _image_list(group.images),
         "meta_data":         _parent_meta(group),
         "attributes":        attribute_mapper.build_parent_attributes(group, translated.attrs_cs),
     }
@@ -106,8 +105,7 @@ def build_variation_payload(
         "manage_stock":   True,
         "stock_status":   "instock" if v.quantity > 0 else "outofstock",
         "attributes":     attribute_mapper.build_variation_attributes(v.colour, v.size_label, group.kind),
-        "images":         [{"src": v.images[0]}] if v.images else [],
-        "meta_data":      [{"key": "_ean", "value": v.ean}],
+        "meta_data":      _variation_meta(v),
     }
 
     if wc_id is not None:
@@ -120,17 +118,71 @@ def build_variation_payload(
 # Private helpers
 # ---------------------------------------------------------------------------
 
-def _image_list(urls: list) -> list:
-    """Convert a list of image URL strings to WooCommerce image dicts."""
-    return [{"src": url} for url in urls]
+def _fifu_meta(images: list) -> list:
+    """
+    Build FIFU (Featured Image From URL) meta entries for a product.
+
+    FIFU serves images directly from external URLs without downloading to WP media.
+    Slot layout:
+        fifu_image_url   = main featured image (images[0])
+        fifu_image_url_0 = gallery slot 1     (images[1])
+        fifu_image_url_1 = gallery slot 2     (images[2])
+        ...up to fifu_image_url_14             (images[15])
+
+    Args:
+        images: Ordered list of absolute image URLs (GCS or original).
+
+    Returns:
+        List of meta dicts ready for WooCommerce meta_data field.
+    """
+    meta = [{"key": "fifu_image_url", "value": images[0] if images else ""}]
+    for i in range(15):
+        url = images[i + 1] if i + 1 < len(images) else ""
+        meta.append({"key": f"fifu_image_url_{i}", "value": url})
+    return meta
 
 
 def _parent_meta(group: ProductGroup) -> list:
-    """Build meta_data list for parent product."""
+    """Build meta_data list for parent product, including FIFU image URLs."""
     meta = [
         {"key": "_b2b_model",    "value": group.model},
         {"key": "_b2b_producer", "value": group.producer},
     ]
     if group.created_at:
         meta.append({"key": "_b2b_created_at", "value": group.created_at})
+    meta.extend(_fifu_meta(group.images))
+    return meta
+
+
+def _variation_meta(v: Variation) -> list:
+    """
+    Build meta_data list for a variation.
+
+    Includes:
+        _ean                      — EAN barcode
+        fifu_image_url            — FIFU featured image; Blocksy "Use Variation Image"
+                                    reads this to auto-populate the colour swatch thumbnail
+                                    without manual WP Admin term configuration.
+        fifu_image_url_0..N       — FIFU gallery slots (same pattern as parent).
+        blocksy_post_meta_options — Blocksy per-variation gallery; switches the displayed
+                                    gallery when this colour variant is selected.
+
+    Args:
+        v: Variation dataclass from product_grouper.
+
+    Returns:
+        List of meta dicts ready for WooCommerce meta_data field.
+    """
+    meta = [{"key": "_ean", "value": v.ean}]
+    if v.images:
+        meta.append({"key": "fifu_image_url", "value": v.images[0]})
+        for i in range(min(len(v.images) - 1, 15)):
+            meta.append({"key": f"fifu_image_url_{i}", "value": v.images[i + 1]})
+        meta.append({
+            "key": "blocksy_post_meta_options",
+            "value": {
+                "gallery_source": "custom",
+                "images": [{"url": url} for url in v.images],
+            },
+        })
     return meta

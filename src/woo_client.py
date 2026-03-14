@@ -36,7 +36,7 @@ from config.api_keys import WOO_CONSUMER_KEY, WOO_CONSUMER_SECRET
 
 from woocommerce import API as WooAPI
 
-from _cache import open_cache, get_id, set_id, get_all_parent_skus
+from _cache import open_cache, get_id, set_id, evict_id, get_all_parent_skus
 from _payloads import build_parent_payload, build_variation_payload
 from product_grouper import ProductGroup
 
@@ -191,6 +191,11 @@ class WooClient:
         """
         Flush _pending: POST one products/batch call then one variations/batch
         call per parent. Caches all returned WooCommerce IDs.
+
+        Stale-cache recovery: if WooCommerce rejects an update with
+        woocommerce_rest_product_invalid_id (cached ID deleted from the store),
+        the item is evicted from cache and immediately re-sent as a CREATE in
+        the same run, so no manual intervention is required.
         """
         pending = self._pending
         self._pending = []
@@ -227,22 +232,72 @@ class WooClient:
                 item["sku"] = create_sku_by_idx.get(idx, "")
             self._handle_parent_response(item, parent_id_map)
 
+        # Stale items: WC rejected the update because the cached ID no longer exists.
+        # Collect them for immediate re-creation.
+        stale_recoveries: list = []  # (group, stripped_payload, var_payloads, cat_slug)
+
         for idx, item in enumerate(resp_updates):
             if not item.get("sku"):
                 item["sku"] = update_sku_by_idx.get(idx, "")
-            self._handle_parent_response(item, parent_id_map)
+            if item.get("error", {}).get("code") == "woocommerce_rest_product_invalid_id":
+                sku = item.get("sku", "")
+                if sku:
+                    evict_id(self._conn, sku)
+                    group, payload, var_payloads, cat_slug = updates[idx]
+                    stripped = {k: v for k, v in payload.items() if k != "id"}
+                    stale_recoveries.append((group, stripped, var_payloads, cat_slug))
+                    logger.warning(
+                        "Stale WooCommerce ID for parent SKU %s — evicting cache "
+                        "and re-creating in this run",
+                        sku,
+                    )
+                else:
+                    self._handle_parent_response(item, parent_id_map)
+            else:
+                self._handle_parent_response(item, parent_id_map)
 
         ok_creates = sum(1 for item in resp_creates if not item.get("error"))
         ok_updates = sum(1 for item in resp_updates if not item.get("error"))
-        errors_count = sum(1 for item in resp_creates + resp_updates if item.get("error"))
-        logger.info(
-            "products/batch — created: %d, updated: %d, errors: %d",
-            ok_creates, ok_updates, errors_count,
+        real_errors = sum(
+            1 for item in resp_creates + resp_updates
+            if item.get("error")
+            and item["error"].get("code") != "woocommerce_rest_product_invalid_id"
         )
+        logger.info(
+            "products/batch — created: %d, updated: %d, errors: %d%s",
+            ok_creates, ok_updates, real_errors,
+            f", stale (re-creating): {len(stale_recoveries)}" if stale_recoveries else "",
+        )
+
+        # Re-create parents whose cached WC IDs were stale.
+        if stale_recoveries:
+            recovery_payloads = [p[1] for p in stale_recoveries]
+            recovery_sku_by_idx = {
+                i: p[1].get("sku", "") for i, p in enumerate(stale_recoveries)
+            }
+            try:
+                resp2 = self._api.post(
+                    "products/batch", {"create": recovery_payloads}
+                ).json()
+                ok_rec = 0
+                for idx, item in enumerate(resp2.get("create", [])):
+                    if not item.get("sku"):
+                        item["sku"] = recovery_sku_by_idx.get(idx, "")
+                    self._handle_parent_response(item, parent_id_map)
+                    if not item.get("error"):
+                        ok_rec += 1
+                logger.info(
+                    "Stale cache recovery — %d/%d parents re-created",
+                    ok_rec, len(stale_recoveries),
+                )
+            except Exception as exc:
+                logger.error("Stale recovery batch failed: %s", exc)
 
         self._conn.commit()
 
-        # Now send variations for every variable parent that got an ID
+        # Now send variations for every variable parent that got an ID.
+        # Stale-recovered parents are also in `pending` (originally as updates),
+        # so they participate here. By now parent_id_map holds their new WC IDs.
         for group, parent_payload, variation_payloads, category_slug in pending:
             if group.kind == "simple" or not variation_payloads:
                 continue
@@ -327,6 +382,10 @@ class WooClient:
         Splits payloads into create/update by cache lookup, sends the batch,
         and caches all returned variation IDs.
 
+        Stale-cache recovery: variations whose cached IDs are rejected with
+        woocommerce_rest_product_variation_invalid_id are evicted from cache
+        and immediately re-sent as creates in the same run.
+
         Args:
             parent_wc_id:       WooCommerce ID of the parent product.
             group:              ProductGroup (for parent_sku reference in cache).
@@ -354,7 +413,8 @@ class WooClient:
             )
             return
 
-        for item in resp.get("create", []) + resp.get("update", []):
+        # Process create responses.
+        for item in resp.get("create", []):
             error = item.get("error")
             sku = item.get("sku", "")
             if error:
@@ -373,6 +433,67 @@ class WooClient:
             wc_id = item.get("id")
             if wc_id and sku:
                 set_id(self._conn, sku, wc_id, parent_sku=group.parent_sku)
+
+        # Process update responses — detect stale IDs and recover.
+        update_sku_by_idx = {i: p.get("sku", "") for i, p in enumerate(updates)}
+        stale_var_payloads: list = []
+
+        for idx, item in enumerate(resp.get("update", [])):
+            error = item.get("error")
+            sku = item.get("sku") or update_sku_by_idx.get(idx, "")
+            if error:
+                code = error.get("code", "")
+                msg = error.get("message", "")
+                if "already exists" in msg.lower() or code == "product_invalid_sku":
+                    wc_id = self._fetch_variation_id_by_sku(parent_wc_id, sku)
+                    if wc_id:
+                        set_id(self._conn, sku, wc_id, parent_sku=group.parent_sku)
+                elif code == "woocommerce_rest_product_variation_invalid_id":
+                    evict_id(self._conn, sku)
+                    stripped = {k: v for k, v in updates[idx].items() if k != "id"}
+                    stale_var_payloads.append(stripped)
+                    logger.warning(
+                        "Stale WooCommerce ID for variation SKU %s — evicting and re-creating",
+                        sku,
+                    )
+                else:
+                    logger.error(
+                        "Variation SKU %s (parent %s) error: [%s] %s",
+                        sku, group.parent_sku, code, msg,
+                    )
+                continue
+            wc_id = item.get("id")
+            if wc_id and sku:
+                set_id(self._conn, sku, wc_id, parent_sku=group.parent_sku)
+
+        # Re-create stale variations in a single follow-up call.
+        if stale_var_payloads:
+            try:
+                resp2 = self._api.post(endpoint, {"create": stale_var_payloads}).json()
+                ok_rec = 0
+                for item in resp2.get("create", []):
+                    sku = item.get("sku", "")
+                    if item.get("error"):
+                        code = item["error"].get("code", "")
+                        msg = item["error"].get("message", "")
+                        logger.error(
+                            "Variation re-create failed for %s (parent %s): [%s] %s",
+                            sku, group.parent_sku, code, msg,
+                        )
+                        continue
+                    wc_id = item.get("id")
+                    if wc_id and sku:
+                        set_id(self._conn, sku, wc_id, parent_sku=group.parent_sku)
+                        ok_rec += 1
+                logger.info(
+                    "Stale variation recovery — %d/%d re-created for parent %s",
+                    ok_rec, len(stale_var_payloads), group.parent_sku,
+                )
+            except Exception as exc:
+                logger.error(
+                    "Stale variation recovery batch failed for parent %s: %s",
+                    group.parent_sku, exc,
+                )
 
     def _fetch_id_by_sku(self, sku: str) -> int | None:
         """

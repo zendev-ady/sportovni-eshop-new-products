@@ -93,6 +93,27 @@ def _sha256(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Helpers for prompt context
+# ---------------------------------------------------------------------------
+
+def _effective_gender(gender_values: List[str]) -> str:
+    """
+    Determine gender label for prompts.
+
+    Args:
+        gender_values: Czech gender values from attrs_cs["pohlavi"].
+
+    Returns:
+        "Unisex" if multiple genders or "Unisex" is present, else the single value.
+    """
+    if not gender_values:
+        return ""
+    if len(gender_values) > 1 or "Unisex" in gender_values:
+        return "Unisex"
+    return gender_values[0]
+
+
+# ---------------------------------------------------------------------------
 # OpenAI call
 # ---------------------------------------------------------------------------
 
@@ -100,11 +121,22 @@ def _build_messages(text: str, trans_type: str, context: dict) -> list:
     """Build the messages list for a single OpenAI call."""
     producer = context.get("producer", "")
     category = context.get("category", "")
-    sport     = context.get("attrs_cs", {}).get("sport", [""])[0]
-    gender    = context.get("attrs_cs", {}).get("pohlavi", [""])[0]
-    colour    = context.get("attrs_cs", {}).get("barva", [""])[0]
+    sport    = context.get("attrs_cs", {}).get("sport", [""])[0]
+
+    gender_values = context.get("attrs_cs", {}).get("pohlavi", [])
+    gender        = _effective_gender(gender_values)
+
+    colour_values = context.get("attrs_cs", {}).get("barva", [])
+    colour        = colour_values[0] if len(colour_values) == 1 else ""
 
     if trans_type == "name":
+        colour_instruction = (
+            "Barvu uveď jako přídavné jméno ve shodě s typem produktu "
+            "(např. 'černé', 'černá', 'černý') — nikdy ne jako 's černým designem' "
+            "ani jiné opisné spojení."
+            if colour else
+            "Barvu do názvu neuváděj — produkt existuje ve více barvách."
+        )
         system = (
             "Jsi SEO copywriter pro český sportovní e-shop. "
             "Píšeš názvy produktů v češtině. Nikdy nepřekládáš názvy značek ani modelové kódy."
@@ -113,13 +145,15 @@ def _build_messages(text: str, trans_type: str, context: dict) -> list:
             f"Vytvoř český název produktu (50–70 znaků) podle formátu: "
             f"{{pohlaví}} {{typ}} {{značka}} {{model}} {{barva}}.\n"
             f"Originál: {text}\n"
-            f"Značka: {producer} | Kategorie: {category} | Sport: {sport} | Pohlaví: {gender} | Barva: {colour}\n"
-            f"Barvu uveď jako přídavné jméno ve shodě s typem produktu (např. 'černé', 'černá', 'černý') — nikdy ne jako 's černým designem' ani jiné opisné spojení.\n"
+            f"Značka: {producer} | Kategorie: {category} | Sport: {sport} | "
+            f"Pohlaví: {gender or '(neuvedeno)'} | Barva: {colour or '(více barev)'}\n"
+            f"{colour_instruction}\n"
             f"Vrať pouze výsledný název, bez uvozovek."
         )
         return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
     if trans_type == "short_description":
+        colours_str = ", ".join(colour_values) if colour_values else ""
         system = (
             "Jsi copywriter pro český sportovní e-shop. "
             "Píšeš krátké HTML popisy produktů (300–500 znaků). "
@@ -129,8 +163,8 @@ def _build_messages(text: str, trans_type: str, context: dict) -> list:
             f"Napiš krátký popis produktu v češtině.\n"
             f"Originální popis: {text}\n"
             f"Kontext — Název: {context.get('name_cs', '')} | Značka: {producer} | "
-            f"Sport: {sport} | Pohlaví: {gender} | Barva: {colour}\n"
-            f"Vrať pouze HTML text, bez obalujících tagů."
+            f"Sport: {sport} | Pohlaví: {gender or '(neuvedeno)'} | Barva: {colours_str or '(neuvedena)'}\n"
+            f"Modelový kód zmiň nejvýše jednou (SEO). Vrať pouze HTML text, bez obalujících tagů."
         )
         return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
@@ -144,8 +178,8 @@ def _build_messages(text: str, trans_type: str, context: dict) -> list:
             f"Napiš detailní popis produktu v češtině.\n"
             f"Originální popis: {text}\n"
             f"Kontext — Název: {context.get('name_cs', '')} | Krátký popis: {context.get('short_cs', '')} | "
-            f"Značka: {producer} | Sport: {sport} | Pohlaví: {gender}\n"
-            f"Doplňuj krátký popis, neopakuj ho. Vrať pouze HTML text."
+            f"Značka: {producer} | Sport: {sport} | Pohlaví: {gender or '(neuvedeno)'}\n"
+            f"Modelový kód zmiň nejvýše jednou (SEO). Doplňuj krátký popis, neopakuj ho. Vrať pouze HTML text."
         )
         return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
@@ -207,6 +241,7 @@ def _translate_text(
     text: str,
     trans_type: str,
     context: dict,
+    cache_key_suffix: str = "",
 ) -> str:
     """
     Return Czech translation of *text*.
@@ -215,10 +250,12 @@ def _translate_text(
     If SKIP_TRANSLATION is True, returns *text* unchanged (no DB access).
 
     Args:
-        conn:       Open SQLite connection to the translation cache.
-        text:       Raw English text to translate.
-        trans_type: "name" | "short_description" | "long_description"
-        context:    Dict passed to prompt builder (producer, category, attrs_cs, etc.)
+        conn:             Open SQLite connection to the translation cache.
+        text:             Raw English text to translate.
+        trans_type:       "name" | "short_description" | "long_description"
+        context:          Dict passed to prompt builder (producer, category, attrs_cs, etc.)
+        cache_key_suffix: Extra string appended to hash input to differentiate context
+                          variants of the same source text (e.g. "|Unisex|Černá").
 
     Returns:
         Translated Czech string, or original text if SKIP_TRANSLATION is set.
@@ -232,7 +269,7 @@ def _translate_text(
     if config.SKIP_TRANSLATION:
         return text
 
-    h = _sha256(text)
+    h = _sha256(text + cache_key_suffix)
     cached = _cache_get(conn, h, trans_type)
     if cached is not None:
         logger.debug("Cache hit: %s %s", trans_type, h[:8])
@@ -306,6 +343,10 @@ def translate(group: ProductGroup) -> TranslatedGroup:
     Text fields (name, short/long description) use gpt-4o-mini with SQLite caching.
     Set config.SKIP_TRANSLATION=True to skip AI calls and return English text as-is.
 
+    Cache keys include effective gender and colour list so that context changes
+    (e.g. mono-colour vs multi-colour variant of same source text) produce
+    separate cache entries with the correct translation.
+
     Args:
         group: A ProductGroup from product_grouper.group()
 
@@ -313,6 +354,11 @@ def translate(group: ProductGroup) -> TranslatedGroup:
         TranslatedGroup with Czech fields populated.
     """
     attrs_cs = _map_attrs(group.attrs)
+
+    # Compute cache-key suffix from context that influences the prompt.
+    effective_gender = _effective_gender(attrs_cs.get("pohlavi", []))
+    colours_key = ",".join(sorted(attrs_cs.get("barva", [])))
+    cache_suffix = f"|{effective_gender}|{colours_key}"
 
     conn = _init_db(config.TRANSLATION_DB)
     try:
@@ -322,16 +368,18 @@ def translate(group: ProductGroup) -> TranslatedGroup:
             "attrs_cs":  attrs_cs,
         }
 
-        name_cs = _translate_text(conn, group.name, "name", context_base)
+        name_cs = _translate_text(conn, group.name, "name", context_base, cache_suffix)
 
         short_cs = _translate_text(
             conn, group.description, "short_description",
             {**context_base, "name_cs": name_cs},
+            cache_suffix,
         )
 
         long_cs = _translate_text(
             conn, group.description, "long_description",
             {**context_base, "name_cs": name_cs, "short_cs": short_cs},
+            cache_suffix,
         )
     finally:
         conn.close()
