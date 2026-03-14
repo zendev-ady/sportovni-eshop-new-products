@@ -205,7 +205,8 @@ def _resolve_ids(paths: list[str]) -> list[int]:
     Resolve CategoryMapper path strings to WooCommerce integer IDs.
 
     Looks each path up in config.WOO_CATEGORY_IDS (with alias fallback).
-    Logs a WARNING for every path with a missing or zero ID.
+    When a path has ID=0, walks up the hierarchy until a non-zero parent is found
+    (e.g. "Muži > Pánské oblečení > Pánské mikiny" → "Muži > Pánské oblečení").
     Falls back to WOO_FALLBACK_CATEGORY_ID when nothing resolves.
 
     Args:
@@ -217,12 +218,23 @@ def _resolve_ids(paths: list[str]) -> list[int]:
     ids: list[int] = []
     for path in paths:
         resolved_path = _PATH_ALIASES.get(path, path)
-        wc_id = WOO_CATEGORY_IDS.get(resolved_path, 0)
-        if wc_id:
-            ids.append(wc_id)
-        else:
+        parts = resolved_path.split(" > ")
+        found = False
+        for depth in range(len(parts), 0, -1):
+            candidate = " > ".join(parts[:depth])
+            wc_id = WOO_CATEGORY_IDS.get(candidate, 0)
+            if wc_id:
+                if depth < len(parts):
+                    logger.warning(
+                        "[category] %r has no WC ID — using parent %r (ID=%d)",
+                        resolved_path, candidate, wc_id,
+                    )
+                ids.append(wc_id)
+                found = True
+                break
+        if not found:
             logger.warning(
-                "[category] no WC ID configured for %r — add to config/category_ids.json",
+                "[category] no WC ID for %r or any parent — skipped",
                 resolved_path,
             )
 

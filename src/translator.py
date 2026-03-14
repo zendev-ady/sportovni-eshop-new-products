@@ -137,6 +137,9 @@ def _build_messages(text: str, trans_type: str, context: dict) -> list:
             if colour else
             "Barvu do názvu neuváděj — produkt existuje ve více barvách."
         )
+        # "Unisex" looks odd in product names (e.g. "Unisex míč", "Unisex taška").
+        # Only include gender prefix when it is Pánské/Dámské/Dětské.
+        gender_in_name = gender if gender not in ("Unisex", "") else ""
         system = (
             "Jsi SEO copywriter pro český sportovní e-shop. "
             "Píšeš názvy produktů v češtině. Nikdy nepřekládáš názvy značek ani modelové kódy."
@@ -144,10 +147,13 @@ def _build_messages(text: str, trans_type: str, context: dict) -> list:
         user = (
             f"Vytvoř český název produktu (50–70 znaků) podle formátu: "
             f"{{pohlaví}} {{typ}} {{značka}} {{model}} {{barva}}.\n"
+            f"Pohlaví použij jen pokud je uvedeno níže — pokud je prázdné, vynech ho.\n"
             f"Originál: {text}\n"
             f"Značka: {producer} | Kategorie: {category} | Sport: {sport} | "
-            f"Pohlaví: {gender or '(neuvedeno)'} | Barva: {colour or '(více barev)'}\n"
+            f"Pohlaví: {gender_in_name or '(vynechat)'} | Barva: {colour or '(více barev)'}\n"
             f"{colour_instruction}\n"
+            f"Nepouštěj anglická slova (Hoodie, Full Zip, Sweatshirt, Half-Zip, Training, "
+            f"Performance, Academy apod.) do výsledného názvu — piš výhradně česky.\n"
             f"Vrať pouze výsledný název, bez uvozovek."
         )
         return [{"role": "system", "content": system}, {"role": "user", "content": user}]
@@ -356,9 +362,10 @@ def translate(group: ProductGroup) -> TranslatedGroup:
     attrs_cs = _map_attrs(group.attrs)
 
     # Compute cache-key suffix from context that influences the prompt.
+    # v2: "Unisex" excluded from name, English words banned — bump forces regeneration.
     effective_gender = _effective_gender(attrs_cs.get("pohlavi", []))
     colours_key = ",".join(sorted(attrs_cs.get("barva", [])))
-    cache_suffix = f"|{effective_gender}|{colours_key}"
+    cache_suffix = f"|v2|{effective_gender}|{colours_key}"
 
     conn = _init_db(config.TRANSLATION_DB)
     try:
