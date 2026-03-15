@@ -35,6 +35,16 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Bad sport values — B2B supplier placeholder strings that carry no routing
+# information.  Stripped from params before routing so that B2B category
+# fallback (step 5 in _build_mapper_params) can fill in the correct value.
+# ---------------------------------------------------------------------------
+_BAD_SPORT_VALUES: frozenset[str] = frozenset({
+    "to be categorized",
+    "tbd",
+})
+
+# ---------------------------------------------------------------------------
 # Sport routing — translates Czech sport values from attrs_cs into values
 # that match CategoryMapper conditions.  Does NOT change what gets stored in
 # WooCommerce as a product attribute (attrs_cs is untouched).
@@ -56,6 +66,115 @@ _SPORT_ROUTING_MAP: dict[str, str] = {
     "plavání":                  "plavání",
     "bruslení":                 "bruslení",
 }
+
+# ---------------------------------------------------------------------------
+# B2B category path → sport routing.
+# Maps the first segment of group.category (the B2B XML <category> element,
+# e.g. "Football/Men" → first segment "football") to the Czech sport routing
+# value used by CategoryMapper.  None means the segment is a generic container
+# (no sport info) — try the second segment, or leave sport unset.
+#
+# NOTE: "lifestyle" maps to None intentionally — do not set sport for lifestyle
+# products; gender + product type routing handles them correctly.
+# ---------------------------------------------------------------------------
+_B2B_CAT_TO_SPORT: dict[str, str | None] = {
+    "football":      "fotbal",
+    "soccer":        "fotbal",
+    "tennis":        "tenis",
+    "padel":         "padel",
+    "basketball":    "basketbal",
+    "martial arts":  "bojové sporty",
+    "running":       "běh",
+    "fitness":       "fitness",
+    "training":      "fitness",
+    "ice hockey":    "lední hokej",
+    "volleyball":    "volejbal",
+    "floorball":     "florbal",
+    "handball":      "házená",
+    "badminton":     "badminton",
+    "squash":        "squash",
+    "swimming":      "plavání",
+    "cycling":       "cyklistika",
+    "bike":          "cyklistika",
+    "winter sports": "lední hokej",
+    "skating":       "bruslení",
+    # None = no sport signal — gender+type routing takes over
+    "lifestyle":     None,
+    "footwear":      None,
+    "clothing":      None,
+    "accessories":   None,
+}
+
+# ---------------------------------------------------------------------------
+# B2B category path gender segment → Czech pohlavi value.
+# Scans all slash-separated segments of group.category for a known gender term.
+# ---------------------------------------------------------------------------
+_B2B_GENDER_MAP: dict[str, str] = {
+    "men":    "pánské",
+    "man":    "pánské",
+    "women":  "dámské",
+    "woman":  "dámské",
+    "kids":   "dětské",
+    "junior": "dětské",
+    "boys":   "dětské",
+    "girls":  "dětské",
+    "unisex": "unisex",
+}
+
+# ---------------------------------------------------------------------------
+# Name-based keyword fallback — ordered lists used in step 7 of
+# _build_mapper_params to extract gender and product type from the raw English
+# B2B product name when attrs and group.category gave nothing.
+#
+# Order matters: longer / more-specific patterns must come BEFORE shorter ones
+# to avoid "men" matching inside "women".
+# ---------------------------------------------------------------------------
+_NAME_GENDER_KEYWORDS: list[tuple[str, str]] = [
+    ("for kids",   "dětské"),
+    ("for junior", "dětské"),
+    ("kids'",      "dětské"),
+    ("kid's",      "dětské"),
+    (" kids ",     "dětské"),
+    ("youth",      "dětské"),
+    ("junior",     "dětské"),
+    (" jr ",       "dětské"),
+    (" jr.",       "dětské"),
+    ("women's",    "dámské"),
+    ("woman's",    "dámské"),
+    ("for women",  "dámské"),
+    ("men's",      "pánské"),
+    ("man's",      "pánské"),
+    ("for men",    "pánské"),
+    ("unisex",     "unisex"),
+]
+
+_NAME_TYPE_KEYWORDS: list[tuple[str, str]] = [
+    ("tracksuit pants", "kalhoty"),
+    ("zip hoodie",      "mikina"),
+    ("sweatshirt",      "mikina"),
+    ("hoodie",          "mikina"),
+    ("winter jacket",   "bunda"),
+    ("padded vest",     "vesta"),
+    ("polo shirt",      "tričko"),
+    ("t-shirt",         "tričko"),
+    (" tee ",           "tričko"),
+    (" jacket",         "bunda"),
+    (" vest ",          "vesta"),
+    (" pants",          "kalhoty"),
+    (" shorts",         "kalhoty"),
+    ("leggings",        "kalhoty"),
+    ("backpack",        "batoh"),
+    (" bag ",           "batoh"),
+    ("sneakers",        "boty"),
+    ("sandals",         "sandále"),
+    (" shoes",          "boty"),
+    (" boots",          "boty"),
+    ("beanie",          "čepice"),
+    (" cap",            "čepice"),
+    (" hat ",           "čepice"),
+    ("gloves",          "rukavice"),
+    (" ball",           "míč"),
+]
 
 # ---------------------------------------------------------------------------
 # Product Type routing — raw B2B English "Product Type" value → Czech "typ" param
@@ -121,6 +240,11 @@ _SLUG_MAP: dict[str, str] = {
     "běh":              "beh",
     "lední hokej":      "hokej",
     "fitness":          "fitness",
+    "volejbal":         "volejbal",
+    "florbal":          "florbal",
+    "házená":           "hazena",
+    "cyklistika":       "cyklistika",
+    "badminton":        "badminton",
 }
 
 # ---------------------------------------------------------------------------
@@ -155,10 +279,18 @@ def _build_mapper_params(group, translated) -> dict[str, str]:
 
     Sources (in order):
     1. translated.attrs_cs — Czech-translated WC attrs (pohlavi, sport, barva, material, vyrobce)
-    2. group.attrs raw — routing-only fields excluded from attrs_cs (Product Type, Category)
+    2. group.attrs["Product Type"] — English value → Czech typ via _PRODUCT_TYPE_MAP
+    3. group.attrs["Category"] — English value → Czech kategorie via _CATEGORY_SOURCE_MAP
+    [bad-sport strip] — removes placeholder B2B sport values like "to be categorized"
+    4. Apply sport routing map — convert Czech sport values to CategoryMapper routing values
+    5. group.category B2B path — fills in missing sport/pohlavi when attrs were absent/stripped
+    6. Shoe-size heuristic — EU sizes 20–35 (≥3 numeric sizes) → pohlavi=dětské
+    7. group.name English keyword scan — last resort for products with empty attrs AND
+       bad group.category ("To be categorized"); sets pohlavi and/or typ from name keywords
 
     Args:
-        group:      ProductGroup with raw B2B attrs in group.attrs.
+        group:      ProductGroup with raw B2B attrs in group.attrs and B2B category in
+                    group.category (e.g. "Football/Men", "Lifestyle/Shoes/Women").
         translated: TranslatedGroup with Czech attrs in translated.attrs_cs.
 
     Returns:
@@ -190,12 +322,97 @@ def _build_mapper_params(group, translated) -> dict[str, str]:
         if cs_kat:
             params["kategorie"] = cs_kat
 
+    # Strip bad sport values BEFORE routing map and BEFORE B2B fallback (step 4 and 5)
+    # so that the stripped slot can be filled by step 5 from group.category.
+    if "sport" in params:
+        sport_first = params["sport"].split(", ")[0].strip().lower()
+        if sport_first in _BAD_SPORT_VALUES:
+            logger.debug(
+                "[category] bad sport value stripped: %r (model=%s)",
+                params["sport"], group.model,
+            )
+            del params["sport"]
+
     # 4. Apply sport routing map — convert Czech sport values to CategoryMapper routing values
     if "sport" in params:
         sport_lower = params["sport"].split(", ")[0].lower()
         routed = _SPORT_ROUTING_MAP.get(sport_lower)
         if routed:
             params["sport"] = routed  # routing only — attrs_cs is unchanged
+
+    # 5. Parse group.category B2B path — fill in missing sport/pohlavi.
+    #    Only fires when steps 1–4 did not already provide these params.
+    #    group.category format: "Football/Men", "Lifestyle/Shoes/Women", "Training/Kids"
+    raw_b2b_category = (group.category or "").strip()
+    if raw_b2b_category:
+        segments = [s.strip().lower() for s in raw_b2b_category.split("/") if s.strip()]
+        # Sport: try first segment, then second (for generic containers like "Footwear/Football")
+        if "sport" not in params and segments:
+            b2b_sport = _B2B_CAT_TO_SPORT.get(segments[0])
+            if b2b_sport is None and len(segments) >= 2:
+                b2b_sport = _B2B_CAT_TO_SPORT.get(segments[1])
+            if b2b_sport is not None:
+                params["sport"] = b2b_sport
+                logger.debug(
+                    "[category] sport from B2B category %r → %r",
+                    raw_b2b_category, b2b_sport,
+                )
+        # Gender: scan all segments
+        if "pohlavi" not in params:
+            for seg in segments:
+                cs_gender = _B2B_GENDER_MAP.get(seg)
+                if cs_gender:
+                    params["pohlavi"] = cs_gender
+                    logger.debug(
+                        "[category] pohlavi from B2B category %r → %r",
+                        raw_b2b_category, cs_gender,
+                    )
+                    break
+
+    # 6. Shoe-size heuristic — if ALL numeric size labels are in range 20–35,
+    #    this is a children's product (EU adult shoes start at 36).
+    #    Requires ≥3 sizes to avoid false positives (e.g. a single size-35 that
+    #    could also be a women's shoe).
+    if "pohlavi" not in params and hasattr(group, "variations") and group.variations:
+        numeric_sizes = []
+        for v in group.variations:
+            try:
+                numeric_sizes.append(float(v.size_label))
+            except (ValueError, AttributeError):
+                pass
+        if (
+            numeric_sizes
+            and all(20 <= s <= 35 for s in numeric_sizes)
+            and len(numeric_sizes) >= 3
+        ):
+            params["pohlavi"] = "dětské"
+            logger.debug(
+                "[category] pohlavi=dětské inferred from shoe sizes %s (model=%s)",
+                sorted(numeric_sizes), group.model,
+            )
+
+    # 7. English name keyword scan — last resort when everything above gave nothing.
+    #    group.name is the raw B2B English name, always present even when attrs={} and
+    #    group.category="To be categorized".
+    name_lower = (" " + (getattr(group, "name", "") or "").lower() + " ")
+    if "pohlavi" not in params:
+        for kw, gender in _NAME_GENDER_KEYWORDS:
+            if kw in name_lower:
+                params["pohlavi"] = gender
+                logger.debug(
+                    "[category] pohlavi=%r inferred from name keyword %r (model=%s)",
+                    gender, kw.strip(), group.model,
+                )
+                break
+    if "typ" not in params:
+        for kw, typ in _NAME_TYPE_KEYWORDS:
+            if kw in name_lower:
+                params["typ"] = typ
+                logger.debug(
+                    "[category] typ=%r inferred from name keyword %r (model=%s)",
+                    typ, kw.strip(), group.model,
+                )
+                break
 
     return params
 
@@ -369,7 +586,8 @@ class CategoryMapper:
                 "subcategories": {
                     "Pánské oblečení": {
                         "conditions": [
-                            {"name_contains": ["oblečení", "mikina", "kalhoty", "tričko", "bunda", "kabát", "vesta"]},
+                            {"name_contains": ["oblečení", "mikina", "kalhoty", "tričko", "bunda", "kabát", "vesta",
+                                               "hoodie", "sweatshirt", "jacket", "pants", "shirt", "t-shirt"]},
                             {"params": {"typ": ["oblečení", "oděv"]}},
                             {"params": {"kategorie": ["oblečení"]}}
                         ],
@@ -407,7 +625,8 @@ class CategoryMapper:
                     },
                     "Pánské boty": {
                         "conditions": [
-                            {"name_contains": ["boty", "tenisky", "obuv", "kopačky", "tretry", "pantofle", "sandále", "trekové", "turistická"]},
+                            {"name_contains": ["boty", "tenisky", "obuv", "kopačky", "tretry", "pantofle", "sandále", "trekové", "turistická",
+                                               "shoes", "boots", "sneakers", "sandals"]},
                             {"params": {"typ": ["obuv", "boty"]}},
                             {"params": {"kategorie": ["boty"]}}
                         ],
@@ -477,7 +696,8 @@ class CategoryMapper:
                 "subcategories": {
                     "Dámské oblečení": {
                         "conditions": [
-                            {"name_contains": ["oblečení", "mikina", "kalhoty", "tričko", "šaty", "sukně", "vesta"]},
+                            {"name_contains": ["oblečení", "mikina", "kalhoty", "tričko", "šaty", "sukně", "vesta",
+                                               "hoodie", "sweatshirt", "jacket", "pants", "shirt", "t-shirt"]},
                             {"params": {"typ": ["oblečení", "oděv"]}},
                             {"params": {"kategorie": ["oblečení"]}}
                         ],
@@ -515,7 +735,8 @@ class CategoryMapper:
                     },
                     "Dámské boty": {
                         "conditions": [
-                            {"name_contains": ["boty", "tenisky", "obuv", "lodičky", "kozačky", "pantofle", "trekové", "turistická"]},
+                            {"name_contains": ["boty", "tenisky", "obuv", "lodičky", "kozačky", "pantofle", "trekové", "turistická",
+                                               "shoes", "boots", "sneakers", "sandals"]},
                             {"params": {"typ": ["obuv", "boty"]}},
                             {"params": {"kategorie": ["boty"]}}
                         ],
@@ -579,13 +800,14 @@ class CategoryMapper:
             "Děti": {
                 "conditions": [
                     {"params": {"pohlavi": ["dětské", "děti", "kids", "junior"]}},
-                    {"name_contains": ["dětsk", "junior", "kids", "boy", "girl"]},
+                    {"name_contains": ["dětsk", "junior", "kid", "boy", "girl", " jr", "děti"]},
                     {"params": {"kategorie": ["dětské"]}}
                 ],
                 "subcategories": {
                     "Dětské oblečení": {
                         "conditions": [
-                            {"name_contains": ["oblečení", "mikina", "kalhoty", "tričko"]},
+                            {"name_contains": ["oblečení", "mikina", "kalhoty", "tričko",
+                                               "hoodie", "sweatshirt", "jacket", "pants", "shirt", "t-shirt"]},
                             {"params": {"typ": ["oblečení", "oděv"]}},
                             {"params": {"kategorie": ["oblečení"]}}
                         ],
@@ -623,7 +845,8 @@ class CategoryMapper:
                     },
                     "Dětské boty": {
                         "conditions": [
-                            {"name_contains": ["boty", "tenisky", "obuv", "sandále"]},
+                            {"name_contains": ["boty", "tenisky", "obuv", "sandále",
+                                               "shoes", "boots", "sneakers", "sandals"]},
                             {"params": {"typ": ["obuv", "boty"]}},
                             {"params": {"kategorie": ["boty"]}}
                         ],
@@ -685,8 +908,11 @@ class CategoryMapper:
             },
             "Sporty": {
                 "conditions": [
-                    {"params": {"sport": ["fotbal", "tenis", "basketbal", "běh", "fitness", "hokej"]}},
-                    {"name_contains": ["sport", "fotbal", "tenis", "basketbal", "běh", "fitness"]},
+                    {"params": {"sport": ["fotbal", "tenis", "basketbal", "běh", "fitness", "hokej",
+                                          "volejbal", "florbal", "házená", "cyklistika", "badminton",
+                                          "squash", "plavání", "bruslení", "padel"]}},
+                    {"name_contains": ["sport", "fotbal", "tenis", "basketbal", "běh", "fitness",
+                                       "volejbal", "florbal", "házená", "cyklistika", "badminton"]},
                     {"params": {"kategorie": ["sport", "sporty"]}}
                 ],
                 "subcategories": {
@@ -1071,6 +1297,41 @@ class CategoryMapper:
                                 "priority": 9
                             }
                         }
+                    },
+                    "Volejbal": {
+                        "conditions": [
+                            {"params": {"sport": ["volejbal", "volleyball"]}},
+                            {"name_contains": ["volejbal", "volleyball"]},
+                        ],
+                        "priority": 8
+                    },
+                    "Florbal": {
+                        "conditions": [
+                            {"params": {"sport": ["florbal", "floorball"]}},
+                            {"name_contains": ["florbal", "floorball"]},
+                        ],
+                        "priority": 8
+                    },
+                    "Házená": {
+                        "conditions": [
+                            {"params": {"sport": ["házená", "handball"]}},
+                            {"name_contains": ["házená", "handball"]},
+                        ],
+                        "priority": 8
+                    },
+                    "Cyklistika": {
+                        "conditions": [
+                            {"params": {"sport": ["cyklistika", "cycling", "bike"]}},
+                            {"name_contains": ["cyklo", "kolo", "cycling", "bike"]},
+                        ],
+                        "priority": 8
+                    },
+                    "Badminton": {
+                        "conditions": [
+                            {"params": {"sport": ["badminton"]}},
+                            {"name_contains": ["badminton"]},
+                        ],
+                        "priority": 8
                     }
                 }
             },
