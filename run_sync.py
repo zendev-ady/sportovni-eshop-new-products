@@ -215,7 +215,8 @@ def main() -> None:
             )
             # Phase 3: resolve WooCommerce category IDs and margin slug
             cat_ids, cat_slug = category_mapper.resolve(group, translated)
-            woo.upsert_group(group, translated, category_ids=cat_ids, category_slug=cat_slug)
+            woo.upsert_group(group, translated, category_ids=cat_ids, category_slug=cat_slug,
+                             status="draft" if not cat_ids else "publish")
         woo.flush()
         drafted = woo.draft_disappeared(current_skus) if not args.limit else 0
         if args.limit:

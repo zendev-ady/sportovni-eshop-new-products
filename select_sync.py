@@ -238,7 +238,8 @@ def run_select(
             )
             logger.info("   %r  →  %r", group.name[:65], (translated.name_cs or "–")[:65])
             cat_ids, cat_slug = category_mapper.resolve(group, translated)
-            woo.upsert_group(group, translated, category_ids=cat_ids, category_slug=cat_slug)
+            woo.upsert_group(group, translated, category_ids=cat_ids, category_slug=cat_slug,
+                             status="draft" if not cat_ids else "publish")
         woo.flush()
 
     logger.info("Selektivní sync dokončen — %d skupin(a) uložena do WooCommerce", len(groups))

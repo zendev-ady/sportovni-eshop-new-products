@@ -104,6 +104,7 @@ class WooClient:
         translated,
         category_ids: list | None = None,
         category_slug: str = "default",
+        status: str = "publish",
     ) -> None:
         """
         Queue one ProductGroup for upsert. Flushes automatically when the
@@ -114,12 +115,14 @@ class WooClient:
             translated:    TranslatedGroup with Czech name, descriptions, attrs_cs.
             category_ids:  WooCommerce category IDs; [] until Phase 3.
             category_slug: Category slug for margin lookup in price_calculator.
+            status:        WooCommerce product status; "publish" or "draft".
+                           Pass "draft" when category_ids is empty (off-category product).
         """
         if category_ids is None:
             category_ids = []
 
         parent_wc_id = get_id(self._conn, group.parent_sku)
-        parent_payload = build_parent_payload(group, category_ids, translated, wc_id=parent_wc_id)
+        parent_payload = build_parent_payload(group, category_ids, translated, wc_id=parent_wc_id, status=status)
 
         variation_payloads = []
         if group.kind != "simple":
@@ -476,10 +479,22 @@ class WooClient:
                     if item.get("error"):
                         code = item["error"].get("code", "")
                         msg = item["error"].get("message", "")
-                        logger.error(
-                            "Variation re-create failed for %s (parent %s): [%s] %s",
-                            sku, group.parent_sku, code, msg,
-                        )
+                        if "already exists" in msg.lower() or code == "product_invalid_sku":
+                            # SKU already exists on WC under a different ID (e.g. after store
+                            # switch). Fetch the real ID so the next run patches correctly.
+                            wc_id = self._fetch_variation_id_by_sku(parent_wc_id, sku)
+                            if wc_id:
+                                set_id(self._conn, sku, wc_id, parent_sku=group.parent_sku)
+                                ok_rec += 1
+                                logger.info(
+                                    "Variation re-create duplicate — found existing ID %d for SKU %s",
+                                    wc_id, sku,
+                                )
+                        else:
+                            logger.error(
+                                "Variation re-create failed for %s (parent %s): [%s] %s",
+                                sku, group.parent_sku, code, msg,
+                            )
                         continue
                     wc_id = item.get("id")
                     if wc_id and sku:

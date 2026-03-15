@@ -33,6 +33,7 @@ def build_parent_payload(
     category_ids: list,
     translated: TranslatedGroup,
     wc_id: int | None = None,
+    status: str = "publish",
 ) -> dict:
     """
     Build the WooCommerce product payload for a parent (or simple) product.
@@ -46,6 +47,7 @@ def build_parent_payload(
         category_ids: List of WooCommerce category IDs (empty list = no category).
         translated:   TranslatedGroup with Czech name, descriptions, and attrs_cs.
         wc_id:        Existing WooCommerce ID if updating; None if creating.
+        status:       WooCommerce product status; "publish" or "draft".
 
     Returns:
         dict — WooCommerce product payload.
@@ -62,7 +64,7 @@ def build_parent_payload(
         "description":       translated.long_description_cs,
         "short_description": translated.short_description_cs,
         "type":              "simple" if is_simple else "variable",
-        "status":            "publish",
+        "status":            status,
         "categories":        [{"id": cid} for cid in category_ids],
         "tags":              _seo.build_tags(group, translated),
         "brands":            [{"name": group.producer}] if group.producer else [],
