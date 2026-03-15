@@ -115,12 +115,12 @@ class TestCalculatePrice:
         Spot-check: 50 EUR wholesale, 1 kg weight, default category slug.
 
         Formula (with FIXED_RATE=25, PRICE_ADJUSTMENT=1.107, BASE_SHIPPING_EUR=8.12,
-                 MARGINS['default']=1.45, MARGIN_EXTRA_CZK=150, VAT=1.21):
-            (50 * 1.107 + 8.12) * 25 * 1.45 * 1.21 + 150 = 2934
+                 MARGINS['default']=1.15, MARGIN_EXTRA_CZK=150, VAT=1.21):
+            (50 * 1.107 + 8.12) * 25 * 1.15 * 1.21 + 150 = 2358
         """
         price_calculator._rate_cache = _FIXED_RATE
         result = calculate_price(50.0, 1.0, "default")
-        assert abs(int(result) - 2934) <= 1
+        assert abs(int(result) - 2358) <= 1
 
 
 # ---------------------------------------------------------------------------
