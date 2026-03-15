@@ -66,7 +66,7 @@ TRANSLATION_DB = os.path.join(CACHE_DIR, "translations.db")
 # ---------------------------------------------------------------------------
 # WooCommerce
 # ---------------------------------------------------------------------------
-WOO_URL = "https://darkblue-toad-760041.hostingersite.com/"          # e.g. "https://mujeshop.cz"
+WOO_URL = "https://sportovni-eshop.cz/"          # e.g. "https://mujeshop.cz"
 WOO_BATCH_SIZE = 100
 WOO_SKU_CACHE_DB = os.path.join(CACHE_DIR, "sku_cache.db")
 
