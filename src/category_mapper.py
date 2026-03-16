@@ -22,14 +22,25 @@ categories in WC Admin > Products > Categories.
 Ported from: fastcentrik-to-woocommerce/src/fastcentrik_woocommerce/mappers/category_mapper.py
 """
 
+import hashlib
 import re
 import logging
 import os
+import sqlite3
 import sys
+import time
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple, Any
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from config.config import WOO_CATEGORY_IDS, WOO_FALLBACK_CATEGORY_ID
+from config.config import (
+    WOO_CATEGORY_IDS,
+    WOO_FALLBACK_CATEGORY_ID,
+    TRANSLATION_DB,
+    TRANSLATION_MODEL,
+    SKIP_TRANSLATION,
+    SKIP_ON_RATE_LIMIT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -498,6 +509,185 @@ def _derive_slug(paths: list[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# AI category fallback
+# ---------------------------------------------------------------------------
+
+# Lazy-opened connection to the translation DB (reuse existing translations table).
+_cat_db_conn: sqlite3.Connection | None = None
+
+
+def _cat_db() -> sqlite3.Connection:
+    """Return (or lazily open) the translations SQLite connection."""
+    global _cat_db_conn
+    if _cat_db_conn is None:
+        os.makedirs(os.path.dirname(TRANSLATION_DB), exist_ok=True)
+        _cat_db_conn = sqlite3.connect(TRANSLATION_DB)
+        _cat_db_conn.execute("PRAGMA journal_mode=WAL")
+        _cat_db_conn.execute(
+            "CREATE TABLE IF NOT EXISTS translations "
+            "(hash TEXT, type TEXT, result TEXT, created_at TEXT, updated_at TEXT, "
+            "PRIMARY KEY (hash, type))"
+        )
+        _cat_db_conn.commit()
+    return _cat_db_conn
+
+
+def _cat_cache_get(key: str) -> str | None:
+    """Look up AI category result in the translations cache (type='category_fallback')."""
+    row = _cat_db().execute(
+        "SELECT result FROM translations WHERE hash = ? AND type = 'category_fallback'",
+        (key,),
+    ).fetchone()
+    return row[0] if row else None
+
+
+def _cat_cache_set(key: str, value: str) -> None:
+    """Store AI category result in the translations cache."""
+    now = datetime.now(timezone.utc).isoformat()
+    conn = _cat_db()
+    row = conn.execute(
+        "SELECT created_at FROM translations WHERE hash = ? AND type = 'category_fallback'",
+        (key,),
+    ).fetchone()
+    created_at = row[0] if row and row[0] else now
+    conn.execute(
+        "INSERT OR REPLACE INTO translations (hash, type, result, created_at, updated_at) "
+        "VALUES (?, 'category_fallback', ?, ?, ?)",
+        (key, value, created_at, now),
+    )
+    conn.commit()
+
+
+def _valid_category_paths() -> list[str]:
+    """Return sorted list of category paths that have a non-zero WC ID."""
+    return sorted(path for path, wc_id in WOO_CATEGORY_IDS.items() if wc_id > 0)
+
+
+def _ai_fallback_category(
+    name_cs: str,
+    params: dict,
+    name_en: str = "",
+    b2b_category: str = "",
+) -> str | None:
+    """
+    Ask the AI to pick the best WooCommerce category path for an unmapped product.
+
+    Uses the same Kilo AI Gateway and translations SQLite cache as translator.py.
+    Returns None when SKIP_TRANSLATION is True, on any error, or when the AI
+    returns a path that is not in the known category list.
+
+    Args:
+        name_cs:      Czech product name (from translated.name_cs).
+        params:       Mapper params dict built by _build_mapper_params().
+        name_en:      Original English B2B product name (group.name) — extra context.
+        b2b_category: B2B category path (group.category, e.g. "Volleyball/Unisex").
+
+    Returns:
+        A valid category path string from WOO_CATEGORY_IDS, or None.
+    """
+    if SKIP_TRANSLATION:
+        return None
+
+    cache_key = hashlib.sha256(
+        (name_cs + "|" + str(sorted(params.items()))).encode("utf-8")
+    ).hexdigest()
+
+    cached = _cat_cache_get(cache_key)
+    if cached is not None:
+        logger.debug("[category] AI fallback cache hit: %r", cached)
+        return cached if cached != "__none__" else None
+
+    valid_paths = _valid_category_paths()
+    if not valid_paths:
+        logger.warning("[category] AI fallback: žádné platné kategorie v category_ids.json")
+        return None
+
+    params_str = ", ".join(f"{k}={v}" for k, v in sorted(params.items())) or "(žádné)"
+    categories_str = "\n".join(f"- {p}" for p in valid_paths)
+    extra_lines = []
+    if name_en:
+        extra_lines.append(f"Anglický název: {name_en}")
+    if b2b_category:
+        extra_lines.append(f"B2B kategorie: {b2b_category}")
+    extra_block = ("\n" + "\n".join(extra_lines)) if extra_lines else ""
+
+    system_msg = (
+        "Jsi asistent pro český sportovní e-shop zaměřený na oblečení, obuv a sportovní vybavení. "
+        "Vybereš jednu nejlepší WooCommerce kategorii pro daný produkt. "
+        "Pokud produkt zjevně nepatří do sportovního e-shopu (např. elektronika, obaly na tablety, "
+        "psací potřeby, samolepky, drogerie, hračky bez sportu apod.), odpověz přesně: none\n"
+        "Jinak odpovíš POUZE přesným řetězcem cesty kategorie ze zadaného seznamu — "
+        "nic jiného, žádné uvozovky, žádný komentář."
+    )
+    user_msg = (
+        f"Produkt: {name_cs}{extra_block}\n"
+        f"Parametry: {params_str}\n\n"
+        f"Dostupné kategorie (vyber přesně jednu, nebo odpověz 'none' pokud produkt nepatří do sortimentu):\n"
+        f"{categories_str}\n\n"
+        f"Odpověz pouze přesným názvem kategorie, nebo slovem none."
+    )
+
+    try:
+        from openai import OpenAI, RateLimitError
+
+        client = OpenAI(
+            base_url="https://api.kilo.ai/api/gateway",
+            api_key=_get_api_key(),
+            max_retries=0,
+        )
+
+        for attempt in range(3):
+            try:
+                response = client.chat.completions.create(
+                    model=TRANSLATION_MODEL,
+                    messages=[
+                        {"role": "system", "content": system_msg},
+                        {"role": "user", "content": user_msg},
+                    ],
+                    max_completion_tokens=80,
+                )
+                raw = response.choices[0].message.content.strip().strip('"').strip("'")
+                if raw.lower() == "none":
+                    logger.warning(
+                        "[category] AI fallback: produkt %r vyhodnocen jako mimo sortiment — draft",
+                        name_cs,
+                    )
+                    _cat_cache_set(cache_key, "__none__")
+                    return None
+                elif raw in WOO_CATEGORY_IDS and WOO_CATEGORY_IDS[raw] > 0:
+                    logger.info("[category] AI fallback → %r", raw)
+                    _cat_cache_set(cache_key, raw)
+                    return raw
+                else:
+                    logger.warning(
+                        "[category] AI fallback: odpověď %r není platná kategorie — přeskočeno",
+                        raw,
+                    )
+                    _cat_cache_set(cache_key, "__none__")
+                    return None
+            except RateLimitError:
+                if SKIP_ON_RATE_LIMIT:
+                    logger.warning("[category] AI fallback: rate limit, přeskočeno (skip_on_rate_limit=True)")
+                    return None
+                wait = 4.1 * (2 ** attempt)
+                logger.warning("[category] AI fallback: rate limit, čekám %.1fs", wait)
+                time.sleep(wait)
+
+        logger.warning("[category] AI fallback: všechny pokusy vyčerpány")
+        return None
+
+    except Exception as exc:
+        logger.error("[category] AI fallback: chyba — %s", exc)
+        return None
+
+
+def _get_api_key() -> str:
+    """Load KILOCODE_API_KEY lazily to avoid import errors when api_keys.py is absent."""
+    from config.api_keys import KILOCODE_API_KEY  # type: ignore
+    return KILOCODE_API_KEY
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -530,6 +720,9 @@ def resolve(group, translated) -> tuple[list[int], str]:
             "[category] unmapped: model=%r  name=%r  params=%r",
             group.model, name, params,
         )
+        ai_path = _ai_fallback_category(name, params, group.name, group.category)
+        if ai_path:
+            categories = [ai_path]
 
     ids = _resolve_ids(categories)
     slug = _derive_slug(categories)

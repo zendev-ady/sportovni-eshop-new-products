@@ -16,6 +16,7 @@ Exit codes:
 import argparse
 import logging
 import os
+import sqlite3
 import sys
 import time
 from collections import Counter
@@ -36,7 +37,7 @@ import product_grouper
 import translator
 import category_mapper
 from price_calculator import calculate_price, get_eur_czk_rate
-from config.config import XML_SOURCE_URL, LOG_DIR, SKIP_TRANSLATION
+from config.config import XML_SOURCE_URL, LOG_DIR, SKIP_TRANSLATION, TRANSLATION_DB
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,23 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
+def _clear_category_fallback_cache() -> int:
+    """
+    Delete all category_fallback entries from translations.db.
+
+    Returns:
+        Number of deleted rows.
+    """
+    if not os.path.exists(TRANSLATION_DB):
+        return 0
+    conn = sqlite3.connect(TRANSLATION_DB)
+    cur = conn.execute("DELETE FROM translations WHERE type = 'category_fallback'")
+    deleted = cur.rowcount
+    conn.commit()
+    conn.close()
+    return deleted
+
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="B2B → WooCommerce sync pipeline")
@@ -64,6 +82,11 @@ def _parse_args() -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help="Parse, group and price without making any WooCommerce API calls",
+    )
+    p.add_argument(
+        "--regen-categories",
+        action="store_true",
+        help="Smaže category_fallback cache a znovu přiřadí kategorie — přeskočí nahrávání obrázků",
     )
     return p.parse_args()
 
@@ -147,11 +170,16 @@ def main() -> None:
             "Pro live sync nastav SKIP_TRANSLATION=False."
         )
 
+    if args.regen_categories:
+        deleted = _clear_category_fallback_cache()
+        logger.info("Regen-categories: smazáno %d záznamů z category_fallback cache", deleted)
+
     source = args.source or XML_SOURCE_URL
     logger.info(
-        "Starting sync — source: %s%s",
+        "Starting sync — source: %s%s%s",
         source,
         "  [DRY RUN]" if args.dry_run else "",
+        "  [REGEN-CATEGORIES]" if args.regen_categories else "",
     )
 
     # 1. Parse
@@ -185,14 +213,17 @@ def main() -> None:
     from woo_client import WooClient
     from image_uploader import resolve_images
 
-    logger.info("Translating product names for image filenames...")
+    logger.info("Překládám názvy produktů...")
     translations = {}
     for g in groups:
-        logger.info("  Translating [%s] SKU=%s  %r", g.kind, g.parent_sku, g.name)
+        logger.info("  Překlad [%s] SKU=%s  %r", g.kind, g.parent_sku, g.name)
         translations[g.parent_sku] = translator.translate(g)
 
-    logger.info("Resolving images to GCS...")
-    resolve_images(groups, translations)
+    if args.regen_categories:
+        logger.info("Regen-categories: přeskakuji nahrávání obrázků")
+    else:
+        logger.info("Resolving images to GCS...")
+        resolve_images(groups, translations)
 
     current_skus = {g.parent_sku for g in groups}
 

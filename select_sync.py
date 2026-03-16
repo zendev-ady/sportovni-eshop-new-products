@@ -21,6 +21,7 @@ import argparse
 import logging
 import os
 import re
+import sqlite3
 import sys
 import time
 from typing import Optional
@@ -40,7 +41,7 @@ import product_grouper
 import translator
 import category_mapper
 from price_calculator import calculate_price, get_eur_czk_rate
-from config.config import XML_SOURCE_URL, LOG_DIR
+from config.config import XML_SOURCE_URL, LOG_DIR, TRANSLATION_DB
 from config import config as _config
 
 logger = logging.getLogger(__name__)
@@ -151,6 +152,26 @@ def filter_products(products: list, ids: set[str]) -> list:
 # Pipeline
 # ---------------------------------------------------------------------------
 
+def _clear_category_fallback_cache() -> int:
+    """
+    Delete all category_fallback entries from translations.db.
+
+    Called at the start of --regen-categories mode so the AI re-evaluates
+    every unmapped product with fresh eyes.
+
+    Returns:
+        Number of deleted rows.
+    """
+    if not os.path.exists(TRANSLATION_DB):
+        return 0
+    conn = sqlite3.connect(TRANSLATION_DB)
+    cur = conn.execute("DELETE FROM translations WHERE type = 'category_fallback'")
+    deleted = cur.rowcount
+    conn.commit()
+    conn.close()
+    return deleted
+
+
 def run_select(
     urls: list[str],
     *,
@@ -158,6 +179,7 @@ def run_select(
     source: Optional[str] = None,
     limit: Optional[int] = None,
     skip_on_rate_limit: bool = False,
+    regen_categories: bool = False,
 ) -> None:
     """
     Run the sync pipeline for a specific list of B2B product URLs.
@@ -168,9 +190,14 @@ def run_select(
         source:              XML URL or file path override; uses config default if None.
         limit:               If set, process only the first N product groups (smoke-test helper).
         skip_on_rate_limit:  If True, skip translation immediately on Gemini 429 (returns English).
+        regen_categories:    If True, clears category_fallback cache and skips image upload —
+                             only re-runs category assignment and updates WC categories.
     """
     if skip_on_rate_limit:
         _config.SKIP_ON_RATE_LIMIT = True
+    if regen_categories:
+        deleted = _clear_category_fallback_cache()
+        logger.info("Regen-categories: smazáno %d záznamů z category_fallback cache", deleted)
     src = source or XML_SOURCE_URL
     logger.info(
         "Spouštím selektivní sync — %d URL(s)%s",
@@ -221,8 +248,11 @@ def run_select(
         logger.info("  Překlad [%s] SKU=%s  %r", g.kind, g.parent_sku, g.name)
         translations[g.parent_sku] = translator.translate(g)
 
-    logger.info("Nahrávám obrázky do GCS...")
-    resolve_images(groups, translations)
+    if regen_categories:
+        logger.info("Regen-categories: přeskakuji nahrávání obrázků")
+    else:
+        logger.info("Nahrávám obrázky do GCS...")
+        resolve_images(groups, translations)
 
     _sync_start = time.monotonic()
     with WooClient() as woo:
@@ -305,6 +335,11 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Přeskočit překlad okamžitě při Gemini 429 místo čekání (vrátí anglický text)",
     )
+    p.add_argument(
+        "--regen-categories",
+        action="store_true",
+        help="Smaže category_fallback cache a znovu přiřadí kategorie — přeskočí nahrávání obrázků",
+    )
     return p.parse_args()
 
 
@@ -336,7 +371,8 @@ if __name__ == "__main__":
             sys.exit(0)
         logger.info("Načteno %d URL z %s", len(urls), args.urls)
         run_select(urls, dry_run=args.dry_run, source=args.source, limit=args.limit,
-                   skip_on_rate_limit=args.skip_on_rate_limit)
+                   skip_on_rate_limit=args.skip_on_rate_limit,
+                   regen_categories=args.regen_categories)
     except Exception as exc:
         logging.getLogger(__name__).critical("Fatální chyba: %s", exc, exc_info=True)
         sys.exit(1)
